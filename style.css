@@ -1,0 +1,190 @@
+/* ---------- Colours (change these to restyle the game) ---------- */
+:root {
+  --bg: #1e2228;
+  --card: #2a2f37;
+  --text: #e8e8e8;
+  --muted: #9aa3ad;
+  --accent: #6aa84f;
+  --light-square: #eeeed2;
+  --dark-square: #769656;
+  --highlight: rgba(255, 220, 0, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 24px 16px;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-size: 15px;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.1); }
+
+input {
+  background: #1a1d22;
+  color: var(--text);
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 15px;
+}
+
+/* ---------- Lobby ---------- */
+#lobby {
+  margin-top: 10vh;
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+#lobby h1 { margin: 0; }
+#lobby p { color: var(--muted); margin: 0; }
+
+/* ---------- Game layout ---------- */
+#game {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  justify-content: center;
+  width: 100%;
+  max-width: 1000px;
+}
+#game[hidden], #lobby[hidden], #promotion[hidden] { display: none; }
+
+.board-area {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.player-label { font-weight: 600; color: var(--muted); }
+
+/* ---------- The board ---------- */
+#board {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(8, 1fr);
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  user-select: none;
+}
+
+.square {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: min(9vw, 52px);
+  line-height: 1;
+  cursor: pointer;
+}
+.square.light { background: var(--light-square); }
+.square.dark  { background: var(--dark-square); }
+.square.last-move::before,
+.square.selected::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--highlight);
+}
+/* little dot showing where the selected piece can go */
+.square.target::after {
+  content: "";
+  position: absolute;
+  width: 28%;
+  height: 28%;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.25);
+}
+.square.in-check { box-shadow: inset 0 0 0 4px #e53935; }
+
+.piece { position: relative; z-index: 1; }
+.piece.w { color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 0 2px #000; }
+.piece.b { color: #111; text-shadow: 0 0 1px #fff; }
+
+/* coordinates (a–h, 1–8) in the corners of edge squares */
+.coord {
+  position: absolute;
+  font-size: 11px;
+  font-weight: 700;
+  opacity: 0.7;
+  color: #333;
+}
+.coord.file { right: 3px; bottom: 2px; }
+.coord.rank { left: 3px; top: 2px; }
+
+#status {
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+  padding: 6px;
+}
+
+#promotion { text-align: center; }
+#promotion button { font-size: 26px; padding: 4px 12px; }
+
+.controls { display: flex; justify-content: center; }
+
+/* ---------- Side panel ---------- */
+.side {
+  width: min(360px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.invite p { margin: 6px 0; color: var(--muted); font-size: 14px; }
+.invite-row { display: flex; gap: 6px; }
+.invite-row input { flex: 1; min-width: 0; font-size: 13px; }
+
+.chat { display: flex; flex-direction: column; gap: 8px; }
+#messages {
+  height: 260px;
+  overflow-y: auto;
+  background: #1a1d22;
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#messages .system { color: var(--muted); font-style: italic; }
+#messages .name { font-weight: 700; margin-right: 4px; }
+#chat-form { display: flex; gap: 6px; }
+#chat-input { flex: 1; min-width: 0; }
+
+#history {
+  margin: 8px 0 0;
+  padding-left: 28px;
+  max-height: 150px;
+  overflow-y: auto;
+  font-family: ui-monospace, monospace;
+  font-size: 14px;
+}

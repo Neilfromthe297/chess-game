@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chess with Friends</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- SCREEN 1: the lobby, where you type your name -->
+  <section id="lobby" class="card">
+    <h1>♞ Chess with Friends</h1>
+    <p id="lobby-text">Enter your name to start a new game.</p>
+    <input id="name-input" type="text" maxlength="20" placeholder="Your name" autofocus />
+    <button id="start-btn">Start game</button>
+  </section>
+
+  <!-- SCREEN 2: the game (hidden until you join) -->
+  <main id="game" hidden>
+    <div class="board-area">
+      <div id="opponent-label" class="player-label"></div>
+      <div id="board"></div>
+      <div id="me-label" class="player-label"></div>
+      <div id="status"></div>
+      <div id="promotion" hidden>
+        Promote to:
+        <button data-piece="q">♛</button>
+        <button data-piece="r">♜</button>
+        <button data-piece="b">♝</button>
+        <button data-piece="n">♞</button>
+      </div>
+      <div class="controls">
+        <button id="new-game-btn">New game</button>
+      </div>
+    </div>
+
+    <aside class="side">
+      <div class="card invite">
+        <strong>Invite a friend</strong>
+        <p>Send them this link:</p>
+        <div class="invite-row">
+          <input id="invite-link" readonly />
+          <button id="copy-btn">Copy</button>
+        </div>
+      </div>
+
+      <div class="card chat">
+        <strong>Chat</strong>
+        <div id="messages"></div>
+        <form id="chat-form">
+          <input id="chat-input" type="text" maxlength="300" placeholder="Say something…" autocomplete="off" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <strong>Moves</strong>
+        <ol id="history"></ol>
+      </div>
+    </aside>
+  </main>
+
+  <!-- socket.io gives us live connection to the server -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="module" src="client.js"></script>
+</body>
+</html>
