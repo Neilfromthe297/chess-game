@@ -523,8 +523,20 @@ input:focus { border-color: var(--green); }
 #messages .name.b { color: #9ec5ff; }
 #messages .name.s { color: var(--faint); }
 #messages .text { color: #d6d5d4; word-wrap: break-word; }
-#chat-form { padding: 8px; }
-#chat-input { width: 100%; }
+#chat-form { padding: 8px; display: flex; gap: 8px; }
+#chat-input { flex: 1; min-width: 0; }
+#send-btn { padding: 8px 16px; box-shadow: 0 3px 0 var(--green-dark); }
+
+/* difficulty buttons: 4 per row, wrapping */
+.toggle.levels { flex-wrap: wrap; }
+.toggle.levels button { flex: 1 0 calc(25% - 6px); flex-direction: column; gap: 0; padding: 7px 2px; }
+.toggle.levels .lv-num { font-size: 16px; color: inherit; }
+.toggle.levels .lv-name { font-size: 11px; font-weight: 600; opacity: 0.8; }
+
+/* "Computer is thinking" dots */
+.thinking::after { content: ""; animation: dots 1.2s steps(4) infinite; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.avatar.bot { font-size: 22px; }
 
 /* ---------------- Phones & small screens ---------------- */
 @media (max-width: 900px) {

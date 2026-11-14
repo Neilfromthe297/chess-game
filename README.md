@@ -2,7 +2,7 @@
 
 An online chess game with live chat. Two people play from their own web browsers, and anyone else who opens the link can watch.
 
-**Features:** public & private game lobbies with a live game list · play or spectate · secret codes for private games · drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
+**Features:** play the computer (Stockfish, 7 difficulty levels from 400 to 3000) · public & private game lobbies with a live game list · play or spectate · secret codes for private games · drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
 
 ---
 
@@ -24,6 +24,8 @@ An online chess game with live chat. Two people play from their own web browsers
 | `public/style.css` | Colours, sizes, and how it looks on phones |
 | `public/client.js` | Draws the board, handles dragging & clicks, sounds, keeps a backup of the game |
 | `public/pieces/` | The chess piece pictures (SVG images) |
+| `public/computer.js` | The computer opponent: talks to Stockfish and sets the difficulty |
+| `public/engine/` | The Stockfish chess engine (runs inside the player's browser) |
 | `package.json` | Lists the libraries the project needs |
 
 Libraries used:
@@ -117,7 +119,8 @@ Open it, start a game, click **Copy**, and send the link to your friend.
 3. To move, drag a piece, or click it and then click where it should go. Dots show the legal moves.
 4. Chat with the players and watchers in the chat box.
 5. Use **½ Draw**, **⚑ Resign**, **⇅ Flip** and **＋ New** (rematch with colours swapped) under the move list.
-6. Click **← Menu** to go back to the main menu. Leaving in the middle of a game counts as resigning, and your seat is freed for someone else.
+6. **Play vs Computer:** pick a difficulty from 400 (Beginner) to 3000 (Maximum) and a colour. The computer runs in your own browser. Use **↶ Takeback** to undo a move. Refreshing the page keeps your game.
+7. Click **← Menu** to go back to the main menu. Leaving in the middle of a game counts as resigning, and your seat is freed for someone else.
 
 ---
 
@@ -139,3 +142,7 @@ Try these in roughly this order. Each one teaches something new:
 The piece images in `public/pieces/` are the "cburnett" set by Colin M.L. Burnett,
 taken from the open-source [chessground](https://github.com/lichess-org/chessground) project
 (GPL-3.0; the original artwork is also available under GPLv2+ / CC BY-SA 3.0).
+
+The computer opponent is [Stockfish](https://stockfishchess.org) 18 (lite, single-threaded build) from the
+[stockfish.js](https://github.com/nmrugg/stockfish.js) project by Nathan Rugg, licensed under GPL-3.0
+(see `public/engine/COPYING.txt`).

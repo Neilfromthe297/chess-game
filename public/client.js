@@ -10,6 +10,7 @@
 // ============================================================
 
 import { Chess } from "/lib/chess.js";
+import { Computer, LEVELS, levelFor } from "./computer.js";
 
 const socket = io();
 const $ = (id) => document.getElementById(id);
@@ -70,6 +71,7 @@ function saveBackup() {
 const params = new URLSearchParams(location.search);
 roomId = params.get("room");
 const wantsToWatch = params.get("watch") === "1";
+const botMode = params.get("vs") === "computer";   // playing the computer?
 let roomMeta = null;       // { name, isPrivate, code } of the current game
 let gameList = [];         // public games, sent by the server
 $("name-input").value = load("chessName") || "";
@@ -103,6 +105,7 @@ function showMenu() {
   $("game").hidden = true;
   $("invite-card").hidden = !roomId;          // came from an invite link
   $("continue-card").hidden = !!roomId || !load("chessLastRoom");
+  if (load("chessLastRoom") === "computer") $("continue-btn").textContent = "🤖 Continue your game vs the computer";
   if (params.get("notfound")) {
     showNotice("That game doesn't exist any more. Create a new one or pick one from the list!");
     history.replaceState(null, "", location.pathname);
@@ -129,6 +132,41 @@ setupToggle("visibility", (v) => {
       : "Anyone can see it in the list and join to play or watch.";
 });
 setupToggle("color-pick");
+
+// ---------- Play vs Computer ----------
+// Make one button per difficulty level.
+for (const lv of LEVELS) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.value = lv.rating;
+  b.innerHTML = `<span class="lv-num"></span><span class="lv-name"></span>`;
+  b.querySelector(".lv-num").textContent = lv.rating;
+  b.querySelector(".lv-name").textContent = lv.label;
+  $("bot-level").appendChild(b);
+}
+function showLevelHint(rating) {
+  const lv = levelFor(rating);
+  $("bot-level-hint").textContent = `${lv.label} (${lv.rating}): ${lv.about}`;
+}
+// Start on the level picked last time (or 800).
+const savedLevel = load("chessBotLevel") || 800;
+$("bot-level").querySelector(`[data-value="${savedLevel}"]`)?.classList.add("on");
+if (!$("bot-level").querySelector(".on")) $("bot-level").firstChild.classList.add("on");
+showLevelHint(toggleValue("bot-level"));
+setupToggle("bot-level", showLevelHint);
+setupToggle("bot-color");
+
+$("bot-btn").addEventListener("click", () => {
+  const name = $("name-input").value.trim();
+  if (name) save("chessName", name);
+  const rating = Number(toggleValue("bot-level"));
+  let color = toggleValue("bot-color");
+  if (color === "random") color = Math.random() < 0.5 ? "w" : "b";
+  save("chessBotLevel", rating);
+  save("chessBot", { rating, color, moves: [], result: null });
+  save("chessLastRoom", "computer");
+  location.href = location.pathname + "?vs=computer";
+});
 
 // Suggest a game name based on the player's name.
 function updateGameNamePlaceholder() {
@@ -182,7 +220,8 @@ $("invite-join-btn").addEventListener("click", () => {
   if (getName()) enterGame();
 });
 $("continue-btn").addEventListener("click", () => {
-  if (getName()) goToRoom(load("chessLastRoom"));
+  if (load("chessLastRoom") === "computer") location.href = location.pathname + "?vs=computer";
+  else if (getName()) goToRoom(load("chessLastRoom"));
 });
 
 // ---------- The live list of public games ----------
@@ -294,6 +333,12 @@ function forgetThisGame() {
 
 // "← Menu" button: leave the game and go back to the main menu.
 $("menu-btn").addEventListener("click", () => {
+  if (botMode) {
+    // Computer games are saved, so you can continue later.
+    if (status.over) forgetThisGame();
+    location.href = location.pathname;
+    return;
+  }
   const playing = myColor && !status.over && players.w && players.b && moves.length > 0;
   if (playing && !confirm("Leave this game? Leaving in the middle of a game counts as resigning.")) return;
   forgetThisGame();
@@ -308,9 +353,6 @@ socket.on("notFound", () => {
   location.replace(location.pathname + "?notfound=1");
 });
 
-// Start-up: show the game if we know who you are, otherwise the menu.
-if (roomId && load("chessName")) enterGame();
-else showMenu();
 
 // ============================================================
 //  SOUNDS — made with the Web Audio API, no sound files needed
@@ -514,7 +556,8 @@ function sendMove(from, to, promotion) {
   selected = null;
   playMoveSound(m);
   render();
-  socket.emit("move", { from, to, promotion });
+  if (botMode) botPlayerMoved(m);
+  else socket.emit("move", { from, to, promotion });
 }
 
 // Pawn reached the end: pick what it turns into.
@@ -571,8 +614,8 @@ function drawPlayerBar(el, color) {
   const p = players[color];
 
   const avatar = document.createElement("div");
-  avatar.className = "avatar " + color;
-  avatar.textContent = p ? p.name[0].toUpperCase() : "?";
+  avatar.className = "avatar " + color + (p?.bot ? " bot" : "");
+  avatar.textContent = p?.bot ? "🤖" : p ? p.name[0].toUpperCase() : "?";
   const dot = document.createElement("span");
   dot.className = "dot" + (p?.online ? " on" : "");
   dot.title = p?.online ? "Online" : "Offline";
@@ -648,7 +691,7 @@ function drawPanel() {
   if (roomMeta) {
     $("room-name").textContent = roomMeta.name;
     document.title = roomMeta.name + " · Chess with Friends";
-    $("room-kind").textContent = roomMeta.isPrivate ? "🔒 Private" : "🌍 Public";
+    $("room-kind").textContent = roomMeta.bot ? "🤖 Computer game" : roomMeta.isPrivate ? "🔒 Private" : "🌍 Public";
     $("code-box").hidden = !roomMeta.isPrivate;
     $("room-code").textContent = roomMeta.code || "";
   }
@@ -659,7 +702,8 @@ function drawPanel() {
   else if (waiting) text = "Waiting for your opponent — send them the invite link!";
   else if (!myColor) text = "You are watching this game.";
   else if (game.turn() === myColor) text = game.inCheck() ? "Your move — you're in check!" : "Your move";
-  else text = `Waiting for ${players[opp].name} to move…`;
+  else text = botMode ? "Computer is thinking" : `Waiting for ${players[opp].name} to move…`;
+  $("status").classList.toggle("thinking", botMode && !status.over && game.turn() !== myColor);
   if (myColor && players[opp] && !players[opp].online && !status.over) {
     text += ` (${players[opp].name} is offline)`;
   }
@@ -677,6 +721,15 @@ function drawPanel() {
   $("new-game-btn").hidden = !myColor;
   $("new-game-btn").disabled = waiting && moves.length === 0;
   $("draw-btn").hidden = $("resign-btn").hidden = !myColor;
+
+  $("watch-info").hidden = botMode;
+  if (botMode) {
+    // Against the computer the "Draw" button becomes "Takeback".
+    $("draw-btn").textContent = "↶ Takeback";
+    $("draw-btn").title = "Take back your last move";
+    $("draw-btn").disabled = myMoveCount() === 0 || status.type === "resign";
+    $("new-game-btn").disabled = false;
+  }
 }
 
 function render() {
@@ -698,27 +751,40 @@ $("copy-btn").addEventListener("click", async () => {
   } catch {
     $("invite-link").select();
   }
-  setTimeout(() => ($("copy-btn").textContent = "Copy"), 1500);
+  setTimeout(() => ($("copy-btn").textContent = "Copy link"), 1500);
 });
 $("flip-btn").addEventListener("click", () => { flipped = !flipped; render(); });
 $("resign-btn").addEventListener("click", () => {
-  if (confirm("Are you sure you want to resign?")) socket.emit("resign");
+  if (!confirm("Are you sure you want to resign?")) return;
+  if (botMode) botResign();
+  else socket.emit("resign");
 });
-$("draw-btn").addEventListener("click", () => socket.emit("offerDraw"));
+$("draw-btn").addEventListener("click", () => {
+  if (botMode) botTakeback();
+  else socket.emit("offerDraw");
+});
 $("accept-draw").addEventListener("click", () => socket.emit("answerDraw", true));
 $("decline-draw").addEventListener("click", () => socket.emit("answerDraw", false));
 $("new-game-btn").addEventListener("click", () => {
   if (status.over || moves.length === 0 || confirm("Start a new game? This game will be lost.")) {
-    socket.emit("newGame");
+    if (botMode) botNewGame();
+    else socket.emit("newGame");
   }
 });
-$("rematch-btn").addEventListener("click", () => { $("gameover").hidden = true; socket.emit("newGame"); });
+$("rematch-btn").addEventListener("click", () => {
+  $("gameover").hidden = true;
+  if (botMode) botNewGame();
+  else socket.emit("newGame");
+});
 $("gameover-close").addEventListener("click", () => ($("gameover").hidden = true));
 
 // ============================================================
 //  MESSAGES FROM THE SERVER
 // ============================================================
-socket.on("state", (s) => {
+socket.on("state", (s) => applyState(s));
+
+// Show a new game state (from the server, or from the computer game).
+function applyState(s) {
   const prevMoveCount = game.history().length;
   const wasOver = status.over;
   const hadOpponent = players.w && players.b;
@@ -753,8 +819,8 @@ socket.on("state", (s) => {
 
   firstState = false;
   render();
-  saveBackup();
-});
+  if (!botMode) saveBackup();
+}
 
 socket.on("errorMessage", (msg) => addMessage({ system: true, text: msg }, false));
 
@@ -803,9 +869,141 @@ function addMessage(msg, keep = true) {
 // up): join again, sending our backup in case it's needed.
 let firstConnect = true;
 socket.on("connect", () => {
-  if (!firstConnect) {
+  if (!firstConnect && !botMode) {
     if (!$("game").hidden) joinRoom();
     else socket.emit("watchLobbies");
   }
   firstConnect = false;
 });
+
+// ============================================================
+//  PLAYING THE COMPUTER
+//  The whole game lives in this browser (saved in localStorage
+//  as "chessBot"), so refreshing the page carries on the game.
+// ============================================================
+let bot = null;          // { rating, color, moves, result }
+let computer = null;     // the Stockfish engine (computer.js)
+let thinking = false;
+let botVersion = 0;      // goes up on takeback / new game, so an old answer is ignored
+
+function startBotGame() {
+  bot = load("chessBot");
+  if (!bot || !Array.isArray(bot.moves)) {
+    location.replace(location.pathname); // nothing saved: back to the menu
+    return;
+  }
+  $("lobby").hidden = true;
+  $("game").hidden = false;
+  document.querySelector(".chat").hidden = true; // nobody to chat with
+  $("rematch-btn").textContent = "Play Again";
+  computer = new Computer();
+  computer.newGame();
+  botUpdate();
+}
+
+// Number of moves YOU have made in this game.
+function myMoveCount() {
+  if (!bot) return 0;
+  return bot.color === "w" ? Math.ceil(bot.moves.length / 2) : Math.floor(bot.moves.length / 2);
+}
+
+// Build the same kind of "state" the server sends, and show it.
+function botUpdate() {
+  save("chessBot", bot);
+  const g = new Chess();
+  let last = null;
+  for (const m of bot.moves) {
+    const r = g.move({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] });
+    last = { from: r.from, to: r.to };
+  }
+  const me = bot.color;
+  const cpu = me === "w" ? "b" : "w";
+  const winnerTitle = (c) => (c === me ? "You won!" : "Computer won");
+  let st = { over: false };
+  if (bot.result?.type === "resign") st = { over: true, type: "resign", title: "Computer won", reason: "by resignation" };
+  else if (g.isCheckmate()) st = { over: true, title: winnerTitle(g.turn() === "w" ? "b" : "w"), reason: "by checkmate" };
+  else if (g.isStalemate()) st = { over: true, title: "Draw", reason: "by stalemate" };
+  else if (g.isThreefoldRepetition()) st = { over: true, title: "Draw", reason: "by repetition" };
+  else if (g.isInsufficientMaterial()) st = { over: true, title: "Draw", reason: "by insufficient material" };
+  else if (g.isDraw()) st = { over: true, title: "Draw", reason: "by 50-move rule" };
+
+  const level = levelFor(bot.rating);
+  applyState({
+    meta: { name: `Computer · ${level.rating} ${level.label}`, bot: true },
+    moves: bot.moves.slice(),
+    lastMove: last,
+    status: st,
+    drawOffer: null,
+    players: {
+      [me]: { name: load("chessName") || "You", online: true },
+      [cpu]: { name: `Computer (${level.rating})`, online: true, bot: true },
+    },
+    spectators: 0,
+    you: me,
+  });
+  computerTurn();
+}
+
+function botPlayerMoved(m) {
+  bot.moves.push(m.from + m.to + (m.promotion || ""));
+  botUpdate();
+}
+
+// If it's the computer's turn, ask Stockfish for a move.
+async function computerTurn() {
+  if (thinking || status.over || game.turn() === bot.color) return;
+  thinking = true;
+  const version = botVersion;
+  const started = Date.now();
+  const move = await computer.chooseMove(game, bot.rating);
+  // Wait at least ~0.6 s so the reply doesn't feel instant.
+  const wait = 600 - (Date.now() - started);
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  thinking = false;
+  if (version !== botVersion) {
+    // You took back a move or restarted while it was thinking.
+    computerTurn();
+    return;
+  }
+  if (move) {
+    bot.moves.push(move.from + move.to + (move.promotion || ""));
+    botUpdate();
+  }
+}
+
+function botResign() {
+  bot.result = { type: "resign" };
+  botUpdate();
+}
+
+function botNewGame() {
+  botVersion++;
+  computer.stop();
+  computer.newGame();
+  bot.moves = [];
+  bot.result = null;
+  botUpdate();
+}
+
+// Take back your last move (and the computer's reply).
+function botTakeback() {
+  if (myMoveCount() === 0) return;
+  botVersion++;
+  computer.stop();
+  const before = myMoveCount();
+  // Remove moves until one of yours is gone and it's your turn.
+  while (bot.moves.length && (myMoveCount() === before || turnAfter(bot.moves) !== bot.color)) {
+    bot.moves.pop();
+  }
+  bot.result = null;
+  botUpdate();
+}
+const turnAfter = (list) => (list.length % 2 === 0 ? "w" : "b");
+
+// ============================================================
+//  START-UP (at the very end, so everything above is ready)
+//  Computer game, online game, or the main menu?
+// ============================================================
+if (botMode) startBotGame();
+else if (roomId && load("chessName")) enterGame();
+else showMenu();

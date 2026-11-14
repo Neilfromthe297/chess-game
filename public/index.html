@@ -60,6 +60,22 @@
         </div>
 
         <div class="card">
+          <h2>🤖 Play vs Computer</h2>
+          <span class="label">Difficulty (rating)</span>
+          <div class="toggle levels" id="bot-level"></div>
+          <p class="hint" id="bot-level-hint"></p>
+
+          <span class="label">Play as</span>
+          <div class="toggle" id="bot-color">
+            <button type="button" data-value="w" class="on"><img src="pieces/wK.svg" alt="" />White</button>
+            <button type="button" data-value="random">🎲 Random</button>
+            <button type="button" data-value="b"><img src="pieces/bK.svg" alt="" />Black</button>
+          </div>
+
+          <button id="bot-btn" class="btn btn-primary btn-big">Play Computer</button>
+        </div>
+
+        <div class="card">
           <h2>Join a private game</h2>
           <div class="code-row">
             <input id="code-input" type="text" maxlength="6" placeholder="CODE" autocomplete="off" />
@@ -107,7 +123,7 @@
         <button class="menu-btn" id="menu-btn" title="Back to main menu">← Menu</button>
         <div class="room-title">
           <div id="room-name">Chess game</div>
-          <div class="room-sub"><span id="room-kind"></span> · <span id="watchers">0</span> watching</div>
+          <div class="room-sub"><span id="room-kind"></span><span id="watch-info"> · <span id="watchers">0</span> watching</span></div>
         </div>
       </div>
 
@@ -145,6 +161,7 @@
         <div id="messages"></div>
         <form id="chat-form">
           <input id="chat-input" type="text" maxlength="300" placeholder="Send a message…" autocomplete="off" />
+          <button type="submit" class="btn btn-primary" id="send-btn">Send</button>
         </form>
       </div>
     </aside>
