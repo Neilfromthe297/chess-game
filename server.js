@@ -6,7 +6,9 @@
 //    2. Keeps a list of game lobbies (public and private)
 //    3. Keeps the "real" copy of each game and checks every
 //       move is legal (so nobody can cheat)
-//    4. Passes moves, chat, resign and draw offers between players
+//    4. Runs the chess clocks
+//    5. Passes moves, chat, resign and draw offers between players
+//    6. Saves finished games and updates ratings (accounts.js)
 // ============================================================
 
 const path = require("path");
@@ -15,6 +17,7 @@ const express = require("express");          // serves web pages
 const { Server } = require("socket.io");     // real-time messages
 const { Chess } = require("chess.js");       // chess rules
 const { setupCoach } = require("./coach");   // the AI chess coaches
+const accounts = require("./accounts");      // sign up, log in, ratings
 
 const app = express();
 const server = http.createServer(app);
@@ -24,12 +27,42 @@ const io = new Server(server);
 const PORT = process.env.PORT || 3000;
 
 // Render sits in front of our server, so trust it to tell us
-// each visitor's real IP address (used for the coach's limits).
+// each visitor's real IP address (used for limits) and https.
 app.set("trust proxy", 1);
 app.use(express.static(path.join(__dirname, "public")));
 setupCoach(app);
+accounts.setupAccounts(app);
 // Let the browser use chess.js too (to show legal moves).
 app.use("/lib", express.static(path.join(__dirname, "node_modules/chess.js/dist/esm")));
+
+// Every connection: check the login cookie, so we know if this
+// is a signed-in player (socket.data.user) or a guest.
+io.use(async (socket, next) => {
+  try {
+    socket.data.user = await accounts.userFromCookieHeader(socket.handshake.headers.cookie);
+  } catch (err) {
+    console.error("Login check failed:", err.message);
+    socket.data.user = null;
+  }
+  next();
+});
+
+// ------------------------------------------------------------
+//  TIME CONTROLS (CLOCKS)
+//  Written as "minutes | increment": 3 | 2 means each player has
+//  3 minutes, and gets 2 extra seconds after every move.
+// ------------------------------------------------------------
+function cleanClock(c) {
+  if (!c) return null;
+  const minutes = Number(c.minutes);
+  const increment = Number(c.increment) || 0;
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) return null;
+  if (!Number.isInteger(increment) || increment < 0 || increment > 180) return null;
+  const clock = { initial: minutes * 60000, inc: increment * 1000 };
+  clock.label = increment ? `${minutes} | ${increment}` : `${minutes} min`;
+  clock.category = accounts.categoryOf(clock); // bullet / blitz / rapid
+  return clock;
+}
 
 // ------------------------------------------------------------
 //  GAME ROOMS (LOBBIES)
@@ -39,34 +72,42 @@ app.use("/lib", express.static(path.join(__dirname, "node_modules/chess.js/dist/
 //  Private games use their secret code as the id, e.g. "K7P2QX",
 //  and are NOT shown in the list. You need the code to join.
 //
-//  Every browser has a secret random "playerId" saved in it.
-//  Seats are tied to that id, so refreshing gives you your
-//  seat back.
+//  Seats are tied to a "playerId": "user:12" for signed-in players
+//  (so you get your seat back on any device), or a random id saved
+//  in a guest's browser.
 // ------------------------------------------------------------
 const rooms = new Map();
 
 function newRoom(meta) {
-  return {
+  const room = {
     name: meta.name,          // e.g. "Neil's game"
     isPrivate: meta.isPrivate,
+    clock: meta.clock || null, // time control, or null for no clock
+    rated: !!meta.rated,       // do ratings change?
     chess: new Chess(),
     moves: [],                // e.g. ["e2e4", "e7e5", "e7e8q"]
-    players: { w: null, b: null }, // { playerId, name, sockets:Set }
+    players: { w: null, b: null }, // { playerId, userId, name, rating, sockets:Set }
     lastMove: null,
-    result: null,             // set when someone resigns / agrees a draw
+    result: null,             // set on resign / agreed draw / timeout
     drawOffer: null,          // "w" or "b" while a draw is offered
     chatLog: [],
     seen: new Set(),          // playerIds that have been here (to avoid repeat messages)
     touched: false,           // has anything happened since the server started?
+    finished: false,          // has this game's end been handled?
+    ratingChange: null,       // { w: +8, b: -8 } after a rated game
+    gameNo: 0,                // goes up with each new game in this room
     createdAt: Date.now(),
     lastActive: Date.now(),
   };
+  resetClock(room);
+  return room;
 }
 
 function cleanMeta(meta = {}) {
   return {
     name: String(meta.name || "").trim().slice(0, 30) || "Chess game",
     isPrivate: !!meta.isPrivate,
+    clock: cleanClock(meta.clock),
   };
 }
 
@@ -90,7 +131,10 @@ function newRoomId(isPrivate) {
 const ONE_DAY = 24 * 60 * 60 * 1000;
 setInterval(() => {
   for (const [id, room] of rooms) {
-    if (connectedCount(id) === 0 && Date.now() - room.lastActive > ONE_DAY) rooms.delete(id);
+    if (connectedCount(id) === 0 && Date.now() - room.lastActive > ONE_DAY) {
+      clearTimeout(room.flagTimer);
+      rooms.delete(id);
+    }
   }
 }, 60 * 60 * 1000);
 
@@ -129,6 +173,10 @@ function makeResult(r) {
   if (r.type === "resign" && (r.loser === "w" || r.loser === "b")) {
     return { type: "resign", loser: r.loser, title: `${NAMES[other(r.loser)]} won`, reason: "by resignation" };
   }
+  if (r.type === "timeout" && (r.loser === "w" || r.loser === "b")) {
+    return { type: "timeout", loser: r.loser, title: `${NAMES[other(r.loser)]} won`, reason: "on time" };
+  }
+  if (r.type === "timeout-draw") return { type: "timeout-draw", title: "Draw", reason: "timeout vs insufficient material" };
   if (r.type === "draw") return { type: "draw", title: "Draw", reason: "by agreement" };
   return null;
 }
@@ -140,6 +188,132 @@ function resetGame(room) {
   room.result = null;
   room.drawOffer = null;
   room.touched = true;
+  room.finished = false;
+  room.ratingChange = null;
+  room.gameNo++;
+  resetClock(room);
+}
+
+// ------------------------------------------------------------
+//  THE CLOCK
+//  The server keeps the official time. Clocks start once both
+//  players have made their first move (like on big chess sites).
+//  When it's your turn your time runs down; after your move you
+//  get the increment. A timer fires if your time runs out.
+// ------------------------------------------------------------
+function resetClock(room) {
+  clearTimeout(room.flagTimer);
+  room.flagTimer = null;
+  room.turnStart = null; // when the current player's clock started running
+  room.timeLeft = room.clock ? { w: room.clock.initial, b: room.clock.initial } : null;
+}
+
+// Is a clock running right now, and whose?
+const runningSide = (room) => (room.clock && room.turnStart && !room.finished ? room.chess.turn() : null);
+
+// Start the clock for the player whose turn it is.
+function startTurnClock(roomId, room) {
+  clearTimeout(room.flagTimer);
+  if (!room.clock || room.moves.length < 2 || gameStatus(room).over) {
+    room.turnStart = null;
+    return;
+  }
+  room.turnStart = Date.now();
+  const side = room.chess.turn();
+  room.flagTimer = setTimeout(() => checkFlag(roomId), room.timeLeft[side] + 50);
+}
+
+// Stop the clocks (game over): take off the time used this turn.
+function stopClock(room) {
+  clearTimeout(room.flagTimer);
+  const side = runningSide(room);
+  if (side) room.timeLeft[side] = Math.max(0, room.timeLeft[side] - (Date.now() - room.turnStart));
+  room.turnStart = null;
+}
+
+// Can this side still checkmate? (If not, running out of time
+// against them is a draw, not a loss — that's the official rule.)
+function canCheckmate(chess, color) {
+  let minors = 0;
+  for (const row of chess.board())
+    for (const p of row)
+      if (p && p.color === color && p.type !== "k") {
+        if (p.type === "n" || p.type === "b") minors++;
+        else return true; // a pawn, rook or queen can always mate
+      }
+  return minors >= 2;
+}
+
+// Has the current player run out of time?
+function checkFlag(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !runningSide(room)) return;
+  const side = room.chess.turn();
+  const left = room.timeLeft[side] - (Date.now() - room.turnStart);
+  if (left > 0) {
+    room.flagTimer = setTimeout(() => checkFlag(roomId), left + 50);
+    return;
+  }
+  room.timeLeft[side] = 0;
+  room.turnStart = null;
+  room.result = canCheckmate(room.chess, other(side))
+    ? makeResult({ type: "timeout", loser: side })
+    : makeResult({ type: "timeout-draw" });
+  room.touched = true;
+  systemMessage(roomId, `${room.players[side]?.name || NAMES[side]} ran out of time.`);
+  broadcastState(roomId);
+}
+
+// The clocks as sent to the browsers (time left right now).
+function clockState(room) {
+  if (!room.clock) return null;
+  const left = { ...room.timeLeft };
+  const side = runningSide(room);
+  if (side) left[side] = Math.max(0, left[side] - (Date.now() - room.turnStart));
+  return { initial: room.clock.initial, inc: room.clock.inc, label: room.clock.label, w: left.w, b: left.b, running: side };
+}
+
+// ------------------------------------------------------------
+//  WHEN A GAME ENDS: stop the clocks, save it, update ratings.
+// ------------------------------------------------------------
+function finishGame(roomId, room) {
+  room.finished = true;
+  stopClock(room);
+  const status = gameStatus(room);
+  const w = room.players.w;
+  const b = room.players.b;
+  // Fewer than 2 moves: the game was "aborted" — nothing is saved.
+  if (room.moves.length < 2) {
+    if (room.rated) systemMessage(roomId, "Game aborted — ratings don't change when a game ends this early.");
+    return;
+  }
+  if (!w || !b || !(w.userId || b.userId) || !accounts.isEnabled()) return; // only save games with an account
+  const gameNo = room.gameNo;
+  const result = status.title === "White won" ? "1-0" : status.title === "Black won" ? "0-1" : "1/2-1/2";
+  accounts
+    .recordGame({
+      white: { userId: w.userId, name: w.name },
+      black: { userId: b.userId, name: b.name },
+      timeControl: room.clock ? room.clock.label : "No clock",
+      category: room.clock?.category,
+      rated: room.rated,
+      result,
+      reason: status.reason,
+      moves: room.moves,
+    })
+    .then((ratings) => {
+      if (!ratings || room.gameNo !== gameNo) return;
+      room.ratingChange = { w: ratings.w.change, b: ratings.b.change };
+      if (room.players.w?.userId === w.userId) room.players.w.rating = ratings.w.after;
+      if (room.players.b?.userId === b.userId) room.players.b.rating = ratings.b.after;
+      const sign = (n) => (n >= 0 ? `+${n}` : `${n}`);
+      systemMessage(
+        roomId,
+        `Ratings: ${w.name} ${ratings.w.after} (${sign(ratings.w.change)}), ${b.name} ${ratings.b.after} (${sign(ratings.b.change)}).`
+      );
+      broadcastState(roomId);
+    })
+    .catch((err) => console.error("Could not save game:", err.message));
 }
 
 // How many people are watching (connected, but not in a seat)?
@@ -148,20 +322,32 @@ function spectatorCount(roomId, room) {
   return Math.max(0, connectedCount(roomId) - seated);
 }
 
+const seatInfo = (s) =>
+  s ? { name: s.name, online: s.sockets.size > 0, rating: s.rating ?? null, registered: !!s.userId } : null;
+
 // Send the current game to everyone in the room. Each person
 // also gets told which colour THEY are ("you").
 function broadcastState(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
-  const seat = (s) => (s ? { name: s.name, online: s.sockets.size > 0 } : null);
+  if (gameStatus(room).over && !room.finished) finishGame(roomId, room);
   const base = {
-    meta: { name: room.name, isPrivate: room.isPrivate, code: room.isPrivate ? roomId : null },
+    meta: {
+      name: room.name,
+      isPrivate: room.isPrivate,
+      code: room.isPrivate ? roomId : null,
+      rated: room.rated,
+      category: room.clock?.category || null,
+      clock: room.clock ? { minutes: room.clock.initial / 60000, increment: room.clock.inc / 1000 } : null,
+    },
     moves: room.moves,
     lastMove: room.lastMove,
     status: gameStatus(room),
     drawOffer: room.drawOffer,
-    players: { w: seat(room.players.w), b: seat(room.players.b) },
+    players: { w: seatInfo(room.players.w), b: seatInfo(room.players.b) },
     spectators: spectatorCount(roomId, room),
+    clock: clockState(room),
+    ratingChange: room.ratingChange,
   };
   for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
     const s = io.sockets.sockets.get(socketId);
@@ -187,12 +373,12 @@ function lobbyList() {
     list.push({
       id,
       name: room.name,
-      players: {
-        w: room.players.w ? { name: room.players.w.name, online: room.players.w.sockets.size > 0 } : null,
-        b: room.players.b ? { name: room.players.b.name, online: room.players.b.sockets.size > 0 } : null,
-      },
+      players: { w: seatInfo(room.players.w), b: seatInfo(room.players.b) },
       openSeat: !!freeSeat(room),
       state,
+      clock: room.clock?.label || null,
+      category: room.clock?.category || null,
+      rated: room.rated,
       moveCount: Math.ceil(room.moves.length / 2),
       spectators: spectatorCount(id, room),
       createdAt: room.createdAt,
@@ -223,6 +409,18 @@ function freeSeat(room, preferred) {
   return null;
 }
 
+// Look up a signed-in player's rating for this room's time control.
+function loadSeatRating(roomId, room, seat) {
+  if (!seat.userId || !room.clock?.category) return;
+  accounts
+    .getRating(seat.userId, room.clock.category)
+    .then((rating) => {
+      seat.rating = rating;
+      broadcastState(roomId);
+    })
+    .catch((err) => console.error("Rating lookup failed:", err.message));
+}
+
 function sendChat(roomId, msg) {
   const room = rooms.get(roomId);
   if (room) {
@@ -239,7 +437,8 @@ const systemMessage = (roomId, text) => sendChat(roomId, { system: true, text })
 //  Render's free plan wipes the server's memory when it sleeps.
 //  Each browser keeps a copy of the game, and sends it when it
 //  reconnects. We replay the moves (checking each one is legal)
-//  to rebuild the game.
+//  to rebuild the game. Restored games are never rated (a
+//  backup comes from a browser, so it can't be fully trusted).
 // ------------------------------------------------------------
 function tryRestore(room, backup) {
   if (!backup || room.touched || !Array.isArray(backup.moves)) return false;
@@ -259,6 +458,16 @@ function tryRestore(room, backup) {
   room.moves = backup.moves.slice();
   room.lastMove = last;
   room.result = makeResult(backup.result);
+  room.rated = false;
+  // Clocks carry on from the times in the backup.
+  if (room.clock && backup.timeLeft) {
+    for (const c of ["w", "b"]) {
+      const t = Number(backup.timeLeft[c]);
+      if (t >= 0 && t <= room.clock.initial + 180 * room.clock.inc) room.timeLeft[c] = t;
+    }
+  }
+  // A game that had already ended was handled before the restart.
+  room.finished = gameStatus(room).over;
   if (room.chatLog.length === 0 && Array.isArray(backup.chat)) {
     room.chatLog = backup.chat.slice(-100).map((c) => ({
       system: !!c.system,
@@ -274,12 +483,16 @@ function tryRestore(room, backup) {
 //  Everything below runs whenever a browser connects.
 // ------------------------------------------------------------
 io.on("connection", (socket) => {
+  const user = socket.data.user; // { id, username } or null for guests
   let roomId = null;
   let playerId = null;
   let myName = "Player";
 
   const myRoom = () => rooms.get(roomId);
   const myColor = () => (myRoom() ? colorOf(myRoom(), playerId) : null);
+  // Signed-in players are always "user:<id>"; guests use their browser's id.
+  const idFor = (given) => (user ? `user:${user.id}` : String(given || "").slice(0, 64));
+  const nameFor = (given) => (user ? user.username : String(given || "Player").trim().slice(0, 20) || "Player");
 
   // ---------- Main menu ----------
   socket.on("watchLobbies", () => {
@@ -290,18 +503,22 @@ io.on("connection", (socket) => {
   // Create a new game. The creator gets a seat straight away.
   socket.on("create", (data = {}, reply) => {
     if (typeof reply !== "function") return;
-    const id = String(data.playerId || "").slice(0, 64);
+    const id = idFor(data.playerId);
     if (!id) return reply({ error: "Something went wrong — please refresh." });
-    const meta = cleanMeta({ name: data.gameName, isPrivate: data.isPrivate });
-    const roomId = newRoomId(meta.isPrivate);
+    const meta = cleanMeta({ name: data.gameName, isPrivate: data.isPrivate, clock: data.clock });
+    // Rated games need an account and a clock.
+    meta.rated = !!(data.rated && user && meta.clock && accounts.isEnabled());
+    const newId = newRoomId(meta.isPrivate);
     const room = newRoom(meta);
     let color = data.color;
     if (color !== "w" && color !== "b") color = Math.random() < 0.5 ? "w" : "b";
-    const name = String(data.playerName || "Player").trim().slice(0, 20) || "Player";
-    room.players[color] = { playerId: id, name, sockets: new Set() };
-    rooms.set(roomId, room);
-    systemMessage(roomId, `${name} created the game and plays ${NAMES[color]}.`);
-    reply({ roomId });
+    const name = nameFor(data.playerName);
+    room.players[color] = { playerId: id, userId: user?.id || null, name, rating: null, sockets: new Set() };
+    rooms.set(newId, room);
+    const kind = `${room.rated ? "rated" : "casual"} ${room.clock ? room.clock.label : "no-clock"} game`;
+    systemMessage(newId, `${name} created a ${kind} and plays ${NAMES[color]}.`);
+    loadSeatRating(newId, room, room.players[color]);
+    reply({ roomId: newId });
   });
 
   // Does a private code exist? (used by "Join with code")
@@ -314,8 +531,8 @@ io.on("connection", (socket) => {
   // ---------- Joining a game (to play or to watch) ----------
   socket.on("join", (data = {}) => {
     roomId = String(data.room || "").slice(0, 40);
-    playerId = String(data.playerId || "").slice(0, 64);
-    myName = String(data.name || "Player").trim().slice(0, 20) || "Player";
+    playerId = idFor(data.playerId);
+    myName = nameFor(data.name);
     if (!roomId || !playerId) return;
     socket.data.playerId = playerId;
     socket.leave("menu");
@@ -340,20 +557,26 @@ io.on("connection", (socket) => {
 
     let color = colorOf(room, playerId);
     let message = null;
+    let notice = null; // a note just for this player
     if (!color && data.want !== "watch") {
-      // Wants to play: take the colour from the backup if it's
-      // free (coming back after a restart), otherwise any free seat.
-      const wanted = data.backup?.color;
-      color = freeSeat(room, wanted);
-      if (color) {
-        const comingBack = color === wanted && restored;
-        if (room.players[color]) {
-          systemMessage(roomId, `${room.players[color].name} left — ${myName} takes their seat.`);
+      if (room.rated && !user) {
+        notice = "This is a rated game — sign up or log in to play. You're watching for now.";
+      } else {
+        // Wants to play: take the colour from the backup if it's
+        // free (coming back after a restart), otherwise any free seat.
+        const wanted = data.backup?.color;
+        color = freeSeat(room, wanted);
+        if (color) {
+          const comingBack = color === wanted && restored;
+          if (room.players[color]) {
+            systemMessage(roomId, `${room.players[color].name} left — ${myName} takes their seat.`);
+          }
+          room.players[color] = { playerId, userId: user?.id || null, name: myName, rating: null, sockets: new Set() };
+          // Sitting down at a finished game starts a fresh one.
+          if (gameStatus(room).over) resetGame(room);
+          if (!comingBack) message = `${myName} joined as ${NAMES[color]}.`;
+          loadSeatRating(roomId, room, room.players[color]);
         }
-        room.players[color] = { playerId, name: myName, sockets: new Set() };
-        // Sitting down at a finished game starts a fresh one.
-        if (gameStatus(room).over) resetGame(room);
-        if (!comingBack) message = `${myName} joined as ${NAMES[color]}.`;
       }
     }
     if (!color && !room.seen.has(playerId)) message = `${myName} is watching.`;
@@ -364,8 +587,10 @@ io.on("connection", (socket) => {
     }
 
     socket.emit("chatLog", room.chatLog);
-    if (restored) systemMessage(roomId, "Game restored — carry on where you left off!");
+    if (restored) systemMessage(roomId, "Game restored — carry on where you left off! (Restored games are unrated.)");
     if (message) systemMessage(roomId, message);
+    if (notice) socket.emit("errorMessage", notice);
+    if (restored) startTurnClock(roomId, room);
     broadcastState(roomId);
   });
 
@@ -380,6 +605,7 @@ io.on("connection", (socket) => {
           room.result = makeResult({ type: "resign", loser: color });
           room.touched = true;
           systemMessage(roomId, `${myName} left the game and resigned.`);
+          broadcastState(roomId); // handle the result while both are still seated
         } else {
           systemMessage(roomId, `${myName} left the game.`);
         }
@@ -407,14 +633,27 @@ io.on("connection", (socket) => {
       broadcastState(roomId);
       return;
     }
+    // Take the time used for this move off your clock.
+    const now = Date.now();
+    if (runningSide(room) === color) {
+      const left = room.timeLeft[color] - (now - room.turnStart);
+      if (left <= 0) {
+        checkFlag(roomId); // too late — you ran out of time
+        return;
+      }
+      room.timeLeft[color] = left;
+    }
     try {
       const r = room.chess.move({ from: move.from, to: move.to, promotion: move.promotion || "q" });
       room.moves.push(r.from + r.to + (r.promotion || ""));
       room.lastMove = { from: r.from, to: r.to };
       room.drawOffer = null; // making a move turns down a draw offer
       room.touched = true;
-      room.lastActive = Date.now();
+      room.lastActive = now;
+      if (room.clock && room.turnStart) room.timeLeft[color] += room.clock.inc; // the increment
+      startTurnClock(roomId, room); // now the other player's clock runs
     } catch {
+      if (room.clock && room.turnStart) room.turnStart = now; // keep counting from now
       socket.emit("errorMessage", "Illegal move.");
     }
     broadcastState(roomId);
@@ -458,6 +697,11 @@ io.on("connection", (socket) => {
   socket.on("newGame", () => {
     const room = myRoom();
     if (!room || !myColor()) return;
+    if (inProgress(room)) {
+      // Starting over mid-game counts as resigning this one.
+      room.result = makeResult({ type: "resign", loser: myColor() });
+      broadcastState(roomId);
+    }
     resetGame(room);
     room.players = { w: room.players.b, b: room.players.w };
     systemMessage(roomId, `${myName} started a new game. Colours swapped!`);
@@ -472,6 +716,7 @@ io.on("connection", (socket) => {
   });
 
   // Refresh / closed tab / phone asleep: keep the seat, show offline.
+  // (The clock keeps running, like on real chess sites.)
   socket.on("disconnect", () => {
     const room = myRoom();
     if (!room) return;
@@ -482,6 +727,8 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Chess server running! Open http://localhost:${PORT} in your browser.`);
+accounts.ready.then(() => {
+  server.listen(PORT, () => {
+    console.log(`Chess server running! Open http://localhost:${PORT} in your browser.`);
+  });
 });

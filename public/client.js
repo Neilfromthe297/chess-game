@@ -17,6 +17,14 @@ import { Computer, LEVELS, levelFor } from "./computer.js";
 const COACHES = await fetch("coaches.json").then((r) => r.json()).catch(() => []);
 const coachById = (id) => COACHES.find((c) => c.id === id);
 
+// Are accounts switched on, and am I logged in? (asks the server)
+const meInfo = await fetch("api/me").then((r) => r.json()).catch(() => ({ accounts: false, user: null }));
+const accountsOn = !!meInfo.accounts;
+const me = meInfo.user; // { username, ratings } when logged in, otherwise null
+if (me) {
+  try { localStorage.setItem("chessName", JSON.stringify(me.username)); } catch {}
+}
+
 const socket = io();
 const $ = (id) => document.getElementById(id);
 const boardEl = $("board");
@@ -35,6 +43,9 @@ let flipped = false;       // "Flip" button
 let chat = [];             // chat messages, kept for the backup
 let firstState = true;
 let spectators = 0;
+let clockData = null;      // the clocks, as last sent by the server
+let clockReceivedAt = 0;   // when we got them (to count down smoothly)
+let ratingChange = null;   // { w: +8, b: -8 } after a rated game
 
 const pieceImg = (color, type) => `pieces/${color}${type.toUpperCase()}.svg`;
 
@@ -66,7 +77,8 @@ function saveBackup() {
     color: myColor,
     result: status.type ? { type: status.type, loser: status.loser } : null,
     chat: chat.slice(-100),
-    meta: roomMeta ? { name: roomMeta.name, isPrivate: roomMeta.isPrivate } : null,
+    meta: roomMeta ? { name: roomMeta.name, isPrivate: roomMeta.isPrivate, clock: roomMeta.clock } : null,
+    timeLeft: clockData ? { w: shownTime("w"), b: shownTime("b") } : null,
   });
 }
 
@@ -244,6 +256,8 @@ $("create-btn").addEventListener("click", () => {
       gameName: $("game-name").value.trim() || `${name}'s game`,
       isPrivate: toggleValue("visibility") === "private",
       color: toggleValue("color-pick"),
+      clock: chosenClock(),
+      rated: !!me && !!chosenClock() && toggleValue("rated-pick") === "rated",
     },
     (reply) => {
       $("create-btn").disabled = false;
@@ -292,7 +306,7 @@ function seatLabel(color, p) {
   img.alt = "";
   span.appendChild(img);
   if (p) {
-    span.append(p.name + (p.online ? "" : " (offline)"));
+    span.append(p.name + (p.rating ? ` (${p.rating})` : "") + (p.online ? "" : " · offline"));
   } else {
     const open = document.createElement("span");
     open.className = "open";
@@ -334,7 +348,17 @@ function drawGameList() {
     badge.textContent = { waiting: "Waiting", playing: "Playing", finished: "Finished" }[g.state];
     const detail =
       g.state === "waiting" ? "Needs a player" : g.state === "playing" ? `Move ${g.moveCount}` : "Game over";
-    meta.append(badge, `${detail} · 👁 ${g.spectators} watching`);
+    const tc = document.createElement("span");
+    tc.className = "tc-tag";
+    tc.textContent = g.clock ? `${CATEGORY_ICONS[g.category] || ""} ${g.clock}` : "♾️ No clock";
+    meta.append(tc, badge);
+    if (g.rated) {
+      const r = document.createElement("span");
+      r.className = "badge rated";
+      r.textContent = "Rated";
+      meta.append(r);
+    }
+    meta.append(`${detail} · 👁 ${g.spectators} watching`);
     info.append(name, ps, meta);
 
     const buttons = document.createElement("div");
@@ -667,6 +691,7 @@ function capturedBy(color) {
 
 function drawPlayerBar(el, color) {
   el.innerHTML = "";
+  el.dataset.color = color;
   el.classList.toggle("active", !status.over && game.turn() === color && !!players.w && !!players.b);
   const p = players[color];
 
@@ -683,6 +708,12 @@ function drawPlayerBar(el, color) {
   const name = document.createElement("div");
   name.className = "player-name";
   name.textContent = p ? p.name : "Waiting for opponent…";
+  if (p?.rating) {
+    const r = document.createElement("span");
+    r.className = "p-rating";
+    r.textContent = `(${p.rating})`;
+    name.appendChild(r);
+  }
   const tag = document.createElement("span");
   tag.className = "tag";
   tag.textContent = p && color === myColor ? "(you)" : p && !p.online ? "(offline)" : "";
@@ -705,9 +736,17 @@ function drawPlayerBar(el, color) {
   }
   info.append(name, cap);
 
-  const turn = document.createElement("div");
-  turn.className = "turn-box";
-  turn.textContent = color === "w" ? "White" : "Black";
+  let turn;
+  if (clockData) {
+    // A chess clock instead of the "White"/"Black" label.
+    turn = document.createElement("div");
+    turn.className = "clock";
+    turn.dataset.color = color;
+  } else {
+    turn = document.createElement("div");
+    turn.className = "turn-box";
+    turn.textContent = color === "w" ? "White" : "Black";
+  }
 
   el.append(avatar, info, turn);
 }
@@ -756,7 +795,13 @@ function drawPanel() {
   if (roomMeta) {
     $("room-name").textContent = roomMeta.name;
     document.title = roomMeta.name + " · Chess with Friends";
-    $("room-kind").textContent = roomMeta.coach ? "🎓 Coach lesson" : roomMeta.bot ? "🤖 Computer game" : roomMeta.isPrivate ? "🔒 Private" : "🌍 Public";
+    // e.g. "⚡ 3 | 2 · 🏆 Rated · 🌍 Public"
+    const timeText = clockData ? `${CATEGORY_ICONS[roomMeta.category] || ""} ${clockData.label}` : "♾️ No clock";
+    $("room-kind").textContent = roomMeta.coach
+      ? "🎓 Coach lesson"
+      : roomMeta.bot
+        ? "🤖 Computer game"
+        : [timeText, roomMeta.rated ? "🏆 Rated" : null, roomMeta.isPrivate ? "🔒 Private" : "🌍 Public"].filter(Boolean).join(" · ");
     $("code-box").hidden = !roomMeta.isPrivate;
     $("room-code").textContent = roomMeta.code || "";
   }
@@ -805,6 +850,7 @@ function render() {
   const bottom = isWhiteBottom() ? "w" : "b";
   drawPlayerBar($("bottom-bar"), bottom);
   drawPlayerBar($("top-bar"), bottom === "w" ? "b" : "w");
+  updateClocks();
   drawMoves();
   drawPanel();
 }
@@ -870,6 +916,10 @@ function applyState(s) {
   drawOffer = s.drawOffer;
   roomMeta = s.meta;
   spectators = s.spectators;
+  clockData = s.clock || null;
+  clockReceivedAt = performance.now();
+  ratingChange = s.ratingChange || null;
+  lowTimeWarned = clockData && shownTime(myColor) < 10000 ? lowTimeWarned : false;
   if (myColor !== s.you) flipped = false;
   myColor = s.you;
   if (!drag) selected = null;
@@ -883,6 +933,7 @@ function applyState(s) {
     $("gameover").hidden = false;
   }
   if (!status.over) $("gameover").hidden = true;
+  showRatingChange();
   if (!firstState && !hadOpponent && players.w && players.b) sounds.notify();
 
   firstState = false;
@@ -1299,6 +1350,354 @@ function builtInTip(kind, extra) {
           : "Good game! Every loss teaches you something. Use ↶ Undo to look at where things went wrong, or play again!";
   }
   return pick(PRINCIPLES);
+}
+
+
+// ============================================================
+//  CHESS CLOCKS
+//  The server keeps the official time and sends it with every
+//  update. In between, we count down smoothly here (10 times a
+//  second) so the clock looks alive.
+// ============================================================
+const CATEGORY_ICONS = { bullet: "🚀", blitz: "⚡", rapid: "⏱️" };
+let lowTimeWarned = false;
+
+// Time left for a colour right now, in milliseconds.
+function shownTime(color) {
+  if (!clockData || !color) return 0;
+  let t = clockData[color];
+  if (clockData.running === color && !status.over) t -= performance.now() - clockReceivedAt;
+  return Math.max(0, t);
+}
+
+// 3:05 — or 0:09.4 (with tenths) under 20 seconds, like chess sites.
+function formatTime(ms) {
+  const total = Math.max(0, ms);
+  if (total < 20000) {
+    const tenths = Math.floor(total / 100);
+    return `0:${String(Math.floor(tenths / 10)).padStart(2, "0")}.${tenths % 10}`;
+  }
+  const secs = Math.ceil(total / 1000);
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const sec = String(secs % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+function updateClocks() {
+  if (!clockData) return;
+  for (const el of document.querySelectorAll(".clock")) {
+    const t = shownTime(el.dataset.color);
+    el.textContent = formatTime(t);
+    // Red when time is short (10 s in bullet, 20 s otherwise).
+    el.classList.toggle("low", t < (clockData.initial <= 120000 ? 10000 : 20000));
+  }
+  // One warning beep when YOUR time drops under 10 seconds.
+  if (myColor && clockData.running === myColor && !status.over) {
+    const mine = shownTime(myColor);
+    if (mine < 10000 && !lowTimeWarned) {
+      lowTimeWarned = true;
+      beep(880, 0, 0.15, 0.2, "square");
+    }
+  }
+}
+setInterval(updateClocks, 100);
+
+// ---------- The time-control picker on the main menu ----------
+// The same choices the big chess sites offer.
+const TIME_CONTROLS = [
+  { cat: "bullet", label: "🚀 Bullet", options: [[1, 0], [1, 1], [2, 1]] },
+  { cat: "blitz",  label: "⚡ Blitz",  options: [[3, 0], [3, 2], [5, 0]] },
+  { cat: "rapid",  label: "⏱️ Rapid",  options: [[10, 0], [15, 10], [30, 0]] },
+];
+const tcLabel = (m, i) => (i ? `${m} | ${i}` : `${m} min`);
+
+function buildTimePicker() {
+  const box = $("time-pick");
+  for (const group of TIME_CONTROLS) {
+    const row = document.createElement("div");
+    row.className = "time-row";
+    const cat = document.createElement("span");
+    cat.className = "t-cat";
+    cat.textContent = group.label;
+    row.appendChild(cat);
+    for (const [m, i] of group.options) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.dataset.value = `${m}+${i}`;
+      b.textContent = tcLabel(m, i);
+      row.appendChild(b);
+    }
+    box.appendChild(row);
+  }
+  const extra = document.createElement("div");
+  extra.className = "time-row extra";
+  for (const [value, text] of [["none", "♾️ No clock"], ["custom", "⚙️ Custom"]]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.value = value;
+    b.textContent = text;
+    extra.appendChild(b);
+  }
+  box.appendChild(extra);
+
+  const saved = load("chessTime") || "10+0";
+  (box.querySelector(`[data-value="${saved}"]`) || box.querySelector('[data-value="10+0"]')).classList.add("on");
+  box.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    box.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+    save("chessTime", b.dataset.value);
+    timePickerChanged();
+  });
+  timePickerChanged();
+}
+
+// { minutes, increment } for the chosen option, or null for no clock.
+function chosenClock() {
+  const v = $("time-pick").querySelector(".on")?.dataset.value || "none";
+  if (v === "none") return null;
+  if (v === "custom") {
+    const minutes = Math.min(180, Math.max(1, Math.round(Number($("custom-min").value) || 10)));
+    const increment = Math.min(180, Math.max(0, Math.round(Number($("custom-inc").value) || 0)));
+    return { minutes, increment };
+  }
+  const [minutes, increment] = v.split("+").map(Number);
+  return { minutes, increment };
+}
+
+function timePickerChanged() {
+  const v = $("time-pick").querySelector(".on")?.dataset.value;
+  $("custom-time").hidden = v !== "custom";
+  // Rated games need an account and a clock.
+  $("rated-wrap").hidden = !me;
+  const clock = chosenClock();
+  const ratedBtn = $("rated-pick").querySelector('[data-value="rated"]');
+  ratedBtn.disabled = !clock;
+  if (!clock) {
+    $("rated-pick").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.value === "casual"));
+  }
+  $("rated-hint").textContent = !clock
+    ? "Games without a clock are always casual."
+    : toggleValue("rated-pick") === "rated"
+      ? "Your rating goes up or down after the game. Only signed-in players can join."
+      : "Just for fun — ratings don't change, and guests can join.";
+}
+$("custom-min").addEventListener("input", timePickerChanged);
+$("custom-inc").addEventListener("input", timePickerChanged);
+setupToggle("rated-pick", timePickerChanged);
+buildTimePicker();
+
+// After a rated game: "+8" in the game-over box.
+function showRatingChange() {
+  const el = $("gameover-rating");
+  const change = ratingChange && myColor ? ratingChange[myColor] : null;
+  if (change == null) {
+    el.hidden = true;
+    return;
+  }
+  const rating = players[myColor]?.rating;
+  el.hidden = false;
+  el.textContent = `Your rating: ${rating ?? ""} (${change >= 0 ? "+" : ""}${change})`;
+  el.style.color = change >= 0 ? "#96bc4b" : "#e05b5b";
+}
+
+// ============================================================
+//  ACCOUNTS: sign up, log in, profiles, leaderboard
+// ============================================================
+function drawAccountBar() {
+  const bar = $("account-bar");
+  bar.innerHTML = "";
+  if (!accountsOn) {
+    bar.innerHTML = '<span class="account-off">Accounts aren\'t switched on yet — everyone plays as a guest.</span>';
+    return;
+  }
+  if (me) {
+    const name = document.createElement("button");
+    name.className = "account-name";
+    const best = Math.max(...Object.values(me.ratings || {}).map((r) => r.rating));
+    name.textContent = `👤 ${me.username}${isFinite(best) ? ` · ${best}` : ""}`;
+    name.title = "Your profile";
+    name.addEventListener("click", () => openProfile(me.username));
+    const out = document.createElement("button");
+    out.className = "btn btn-secondary";
+    out.textContent = "Log Out";
+    out.addEventListener("click", logOut);
+    bar.append(name, out);
+  } else {
+    const login = document.createElement("button");
+    login.className = "btn btn-secondary";
+    login.textContent = "Log In";
+    login.addEventListener("click", () => openAuth("login"));
+    const signup = document.createElement("button");
+    signup.className = "btn btn-primary";
+    signup.textContent = "Sign Up";
+    signup.addEventListener("click", () => openAuth("signup"));
+    bar.append(login, signup);
+  }
+}
+
+function setupNameCard() {
+  if (me) {
+    // Signed in: your username is your name.
+    $("name-input").value = me.username;
+    $("name-input").disabled = true;
+    $("name-card").querySelector(".label").textContent = "Playing as";
+  } else if (accountsOn) {
+    $("guest-hint").hidden = false;
+  }
+}
+$("guest-signup").addEventListener("click", (e) => {
+  e.preventDefault();
+  openAuth("signup");
+});
+
+// ---------- the pop-up ----------
+function openModal(which) {
+  $("modal").hidden = false;
+  $("auth-form").hidden = which !== "auth";
+  $("profile").hidden = which !== "profile";
+}
+function closeModal() {
+  $("modal").hidden = true;
+}
+$("modal-close").addEventListener("click", closeModal);
+$("modal").addEventListener("click", (e) => {
+  if (e.target === $("modal")) closeModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("modal").hidden) closeModal();
+});
+
+let authMode = "signup";
+function setAuthMode(mode) {
+  authMode = mode;
+  $("auth-tabs").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.value === mode));
+  $("signup-extra").hidden = mode !== "signup";
+  $("auth-submit").textContent = mode === "signup" ? "Create Account" : "Log In";
+  $("auth-pass").autocomplete = mode === "signup" ? "new-password" : "current-password";
+  $("auth-error").hidden = true;
+}
+function openAuth(mode) {
+  openModal("auth");
+  setAuthMode(mode);
+  $("auth-user").focus();
+}
+setupToggle("auth-tabs", setAuthMode);
+setupToggle("auth-level");
+
+$("auth-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const showError = (msg) => {
+    $("auth-error").textContent = msg;
+    $("auth-error").hidden = false;
+  };
+  const username = $("auth-user").value.trim();
+  const password = $("auth-pass").value;
+  if (authMode === "signup" && password !== $("auth-pass2").value) return showError("The two passwords don't match.");
+  $("auth-submit").disabled = true;
+  try {
+    const res = await fetch(authMode === "signup" ? "api/signup" : "api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, level: Number(toggleValue("auth-level")) }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return showError(data.error || "Something went wrong — please try again.");
+    location.reload(); // reconnect as the signed-in player
+  } catch {
+    showError("Couldn't reach the server — check your connection.");
+  } finally {
+    $("auth-submit").disabled = false;
+  }
+});
+
+async function logOut() {
+  await fetch("api/logout", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+  location.reload();
+}
+
+// ---------- profiles ----------
+const CAT_NAMES = { bullet: "🚀 Bullet", blitz: "⚡ Blitz", rapid: "⏱️ Rapid" };
+function el(tag, className, text) {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text != null) e.textContent = text;
+  return e;
+}
+
+async function openProfile(username) {
+  openModal("profile");
+  const box = $("profile");
+  box.textContent = "Loading…";
+  const data = await fetch("api/profile/" + encodeURIComponent(username)).then((r) => r.json()).catch(() => null);
+  if (!data || data.error) {
+    box.textContent = data?.error || "Couldn't load this profile.";
+    return;
+  }
+  box.innerHTML = "";
+  const head = el("div", "profile-head");
+  head.append(el("div", "avatar w", data.username[0].toUpperCase()));
+  const title = el("div");
+  title.append(el("h2", null, data.username), el("div", "hint", `Joined ${new Date(data.joined).toLocaleDateString()}`));
+  head.append(title);
+  box.append(head);
+
+  const grid = el("div", "profile-ratings");
+  for (const cat of ["bullet", "blitz", "rapid"]) {
+    const r = data.ratings[cat];
+    const b = el("div", "rating-box");
+    b.append(el("div", "r-cat", CAT_NAMES[cat]), el("div", "r-num", r.rating), el("div", "r-wld", `${r.wins}W · ${r.losses}L · ${r.draws}D`));
+    grid.append(b);
+  }
+  box.append(grid);
+
+  box.append(el("span", "label", "Recent games"));
+  const list = el("div", "history");
+  if (data.games.length === 0) list.append(el("p", "hint", "No games yet. Play one to see it here!"));
+  for (const g of data.games) {
+    const row = el("div", "history-row");
+    row.append(el("span", `res ${g.outcome}`, { win: "W", loss: "L", draw: "½" }[g.outcome]));
+    row.append(el("span", null, `vs ${g.opponent}${g.opponentRating ? ` (${g.opponentRating})` : ""} · ${g.reason}`));
+    row.append(el("span", "tc", `${CATEGORY_ICONS[g.category] || "🙂"} ${g.timeControl}${g.rated ? "" : " · casual"}`));
+    const chg = g.change == null ? "" : `${g.change >= 0 ? "+" : ""}${g.change}`;
+    row.append(el("span", `chg ${g.change > 0 ? "up" : g.change < 0 ? "down" : ""}`, chg));
+    list.append(row);
+  }
+  box.append(list);
+}
+
+// ---------- leaderboard ----------
+async function loadLeaderboard(category) {
+  const data = await fetch("api/leaderboard?category=" + category).then((r) => r.json()).catch(() => null);
+  const list = $("leaderboard");
+  list.innerHTML = "";
+  if (!data?.players?.length) {
+    list.append(el("li", "lb-empty", "No rated games yet — be the first!"));
+    return;
+  }
+  for (const p of data.players) {
+    const li = el("li");
+    const name = el("span", "lb-name", p.username);
+    name.addEventListener("click", () => openProfile(p.username));
+    li.append(name, el("span", null, p.rating));
+    list.append(li);
+  }
+}
+if (accountsOn) {
+  $("leaderboard-card").hidden = false;
+  setupToggle("board-pick", loadLeaderboard);
+  loadLeaderboard("blitz");
+}
+drawAccountBar();
+setupNameCard();
+
+// Click a player's name in a game to see their profile.
+for (const id of ["top-bar", "bottom-bar"]) {
+  $(id).addEventListener("click", (e) => {
+    const p = players[$(id).dataset.color];
+    if (accountsOn && p?.registered && e.target.closest(".player-name")) openProfile(p.name);
+  });
 }
 
 // ============================================================

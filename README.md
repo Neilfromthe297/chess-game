@@ -2,7 +2,7 @@
 
 An online chess game with live chat. Two people play from their own web browsers, and anyone else who opens the link can watch.
 
-**Features:** 7 friendly AI chess coaches (400–3000) who explain your moves, give hints and answer questions · play the computer (Stockfish, 7 difficulty levels from 400 to 3000) · public & private game lobbies with a live game list · play or spectate · secret codes for private games · drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
+**Features:** chess clocks (bullet, blitz, rapid, custom) · accounts with passwords and Elo ratings, profiles and a leaderboard · 7 friendly AI chess coaches (400–3000) who explain your moves, give hints and answer questions · play the computer (Stockfish, 7 difficulty levels from 400 to 3000) · public & private game lobbies with a live game list · play or spectate · secret codes for private games · drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
 
 ---
 
@@ -24,6 +24,7 @@ An online chess game with live chat. Two people play from their own web browsers
 | `public/style.css` | Colours, sizes, and how it looks on phones |
 | `public/client.js` | Draws the board, handles dragging & clicks, sounds, keeps a backup of the game |
 | `public/pieces/` | The chess piece pictures (SVG images) |
+| `accounts.js` | Sign up / log in, safe password storage, ratings, saved games (PostgreSQL database) |
 | `coach.js` | The AI coach on the server: builds the facts, calls Claude, limits usage |
 | `public/coaches.json` | The 7 coaches: names, ratings, personalities |
 | `public/computer.js` | The computer opponent: talks to Stockfish and sets the difficulty |
@@ -127,7 +128,26 @@ Open it, start a game, click **Copy**, and send the link to your friend.
 
 ---
 
-## 5. Switching on the AI coaches
+## 5. Switching on accounts and ratings
+
+Accounts need a **database** — a permanent store for usernames, (scrambled) passwords, ratings and games. The game uses **PostgreSQL**, which many services host for you. Without one, everyone simply plays as a guest.
+
+1. Create a free PostgreSQL database. **Neon** (https://neon.tech) is a good choice: sign up, create a project, and copy the **connection string** (it starts with `postgresql://` and ends with `?sslmode=require`). Check the provider's current free-plan limits before you rely on it — Render's own free database, for example, is deleted after a limited time.
+2. On Render, open your service → **Environment** → **Add Environment Variable**:
+   * Key: `DATABASE_URL`
+   * Value: *(paste the connection string)*
+3. Click **Save Changes**. When Render restarts, its log should say **"Accounts: connected to the database."** The game creates its tables automatically.
+4. The main menu now shows **Log In** and **Sign Up** buttons.
+
+How it keeps accounts safe: passwords are never stored — only a "hash" made with `scrypt`; logins use a random token in a secure, HttpOnly cookie (only a hash of it is stored); and repeated sign-up or login attempts are slowed down. There's no email, so passwords can't be reset — players should remember them.
+
+**Ratings:** like big chess sites, each player has separate **Bullet**, **Blitz** and **Rapid** ratings, starting at 400 / 800 / 1200 / 1600 depending on the level chosen at sign-up. Only **rated** games change them: both players must be signed in and the game must have a clock. Ratings use the Elo system (new players' ratings move faster for their first 20 games). Games that end before both players have moved are "aborted" and don't count. Games restored after a server restart are always unrated.
+
+**Clocks:** choose a time control when creating a game — Bullet (1 min, 1 | 1, 2 | 1), Blitz (3 min, 3 | 2, 5 min), Rapid (10 min, 15 | 10, 30 min), Custom, or No clock. "3 | 2" means 3 minutes each plus 2 seconds added after every move. Clocks start once both players have made their first move; running out of time loses (or draws, if the opponent can't possibly checkmate).
+
+---
+
+## 6. Switching on the AI coaches
 
 Without any setup, the coaches use built-in tips. To let them really talk (explain moves, answer questions) they use **Claude**, Anthropic's AI:
 
@@ -143,7 +163,7 @@ Without any setup, the coaches use built-in tips. To let them really talk (expla
 
 ---
 
-## 6. Ideas for what to learn next
+## 7. Ideas for what to learn next
 Try these in roughly this order. Each one teaches something new:
 
 1. **Change the colours.** Edit the `--light-square` and `--dark-square` values at the top of `style.css`.

@@ -12,8 +12,11 @@
   <!-- ============ SCREEN 1: LOBBY ============ -->
   <section id="lobby" hidden>
     <header class="menu-header">
-      <img src="pieces/wN.svg" alt="" />
-      <h1>Chess with Friends</h1>
+      <div class="brand">
+        <img src="pieces/wN.svg" alt="" />
+        <h1>Chess with Friends</h1>
+      </div>
+      <div class="account-bar" id="account-bar"></div>
     </header>
 
     <div id="notice" class="notice" hidden></div>
@@ -21,9 +24,10 @@
     <div class="menu-grid">
       <!-- Left column: your name, create a game, join with a code -->
       <div class="menu-col">
-        <div class="card">
+        <div class="card" id="name-card">
           <label class="label" for="name-input">Your name</label>
           <input id="name-input" type="text" maxlength="20" placeholder="Enter your name" autocomplete="nickname" />
+          <p class="hint" id="guest-hint" hidden>Playing as a guest. <a href="#" id="guest-signup">Sign up</a> to get a rating and save your games.</p>
         </div>
 
         <div class="card" id="invite-card" hidden>
@@ -48,6 +52,22 @@
             <button type="button" data-value="private">🔒 Private</button>
           </div>
           <p class="hint" id="visibility-hint">Anyone can see it in the list and join to play or watch.</p>
+
+          <span class="label">Time control</span>
+          <div id="time-pick" class="time-pick"></div>
+          <div class="custom-time" id="custom-time" hidden>
+            <label>Minutes <input id="custom-min" type="number" min="1" max="180" value="10" /></label>
+            <label>Increment (sec) <input id="custom-inc" type="number" min="0" max="180" value="0" /></label>
+          </div>
+
+          <div id="rated-wrap" hidden>
+            <span class="label">Game type</span>
+            <div class="toggle" id="rated-pick">
+              <button type="button" data-value="rated" class="on">🏆 Rated</button>
+              <button type="button" data-value="casual">🙂 Casual</button>
+            </div>
+            <p class="hint" id="rated-hint"></p>
+          </div>
 
           <span class="label">Play as</span>
           <div class="toggle" id="color-pick">
@@ -111,6 +131,18 @@
           </div>
           <div id="game-list"></div>
         </div>
+
+        <div class="card" id="leaderboard-card" hidden>
+          <div class="games-head">
+            <h2>🏆 Leaderboard</h2>
+          </div>
+          <div class="toggle small" id="board-pick">
+            <button type="button" data-value="bullet">🚀 Bullet</button>
+            <button type="button" data-value="blitz" class="on">⚡ Blitz</button>
+            <button type="button" data-value="rapid">⏱️ Rapid</button>
+          </div>
+          <ol id="leaderboard" class="leaderboard"></ol>
+        </div>
       </div>
     </div>
   </section>
@@ -128,6 +160,7 @@
             <button class="gameover-close" id="gameover-close" aria-label="Close">✕</button>
             <div class="gameover-title" id="gameover-title"></div>
             <div class="gameover-reason" id="gameover-reason"></div>
+            <div class="gameover-rating" id="gameover-rating" hidden></div>
             <button class="btn btn-primary btn-big" id="rematch-btn">Rematch</button>
           </div>
         </div>
@@ -185,6 +218,41 @@
       </div>
     </aside>
   </main>
+
+  <!-- ============ POP-UP: sign up / log in / profile ============ -->
+  <div id="modal" class="modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <button class="gameover-close" id="modal-close" aria-label="Close">✕</button>
+
+      <form id="auth-form" hidden>
+        <div class="toggle" id="auth-tabs">
+          <button type="button" data-value="signup" class="on">Sign Up</button>
+          <button type="button" data-value="login">Log In</button>
+        </div>
+        <label class="label" for="auth-user">Username</label>
+        <input id="auth-user" type="text" maxlength="20" autocomplete="username" placeholder="3–20 letters, numbers or _" />
+        <label class="label" for="auth-pass">Password</label>
+        <input id="auth-pass" type="password" maxlength="128" autocomplete="new-password" placeholder="At least 8 characters" />
+        <div id="signup-extra">
+          <label class="label" for="auth-pass2">Repeat password</label>
+          <input id="auth-pass2" type="password" maxlength="128" autocomplete="new-password" />
+          <span class="label">How good are you at chess?</span>
+          <div class="toggle levels" id="auth-level">
+            <button type="button" data-value="400"><span class="lv-num">New</span><span class="lv-name">400</span></button>
+            <button type="button" data-value="800" class="on"><span class="lv-num">Beginner</span><span class="lv-name">800</span></button>
+            <button type="button" data-value="1200"><span class="lv-num">Intermediate</span><span class="lv-name">1200</span></button>
+            <button type="button" data-value="1600"><span class="lv-num">Advanced</span><span class="lv-name">1600</span></button>
+          </div>
+          <p class="hint">This sets your starting rating. It changes as you play rated games.</p>
+        </div>
+        <p class="form-error" id="auth-error" hidden></p>
+        <button type="submit" class="btn btn-primary btn-big" id="auth-submit">Create Account</button>
+        <p class="hint">There's no email, so please remember your password — it can't be reset.</p>
+      </form>
+
+      <div id="profile" hidden></div>
+    </div>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="client.js"></script>
