@@ -36,12 +36,34 @@ if (roomId) {
   $("start-btn").textContent = "Join game";
 }
 
+// localStorage = a small notebook the browser keeps for this
+// website, even after a refresh. (try/catch: some private-browsing
+// modes don't allow it.)
+function load(key) {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+function save(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+
+// A random id that identifies THIS browser, so the server can
+// give you your seat back when you refresh.
+let playerId = load("chessPlayerId");
+if (!playerId) {
+  playerId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  save("chessPlayerId", playerId);
+}
+
 // Remember the player's name for next time.
-$("name-input").value = localStorage.getItem("chessName") || "";
+$("name-input").value = load("chessName") || "";
+
+function joinRoom() {
+  socket.emit("join", { room: roomId, name: load("chessName") || "Player", playerId });
+}
 
 function startGame() {
   const name = $("name-input").value.trim() || "Player";
-  localStorage.setItem("chessName", name);
+  save("chessName", name);
 
   if (!roomId) {
     // Make a random 6-letter room id and put it in the address bar.
@@ -52,8 +74,12 @@ function startGame() {
   $("invite-link").value = location.href;
   $("lobby").hidden = true;
   $("game").hidden = false;
-  socket.emit("join", { room: roomId, name });
+  joinRoom();
 }
+
+// Refreshed the page, or came back to the link? If we already
+// know your name, skip the name screen and go straight in.
+if (roomId && load("chessName")) startGame();
 
 $("start-btn").addEventListener("click", startGame);
 $("name-input").addEventListener("keydown", (e) => {
@@ -198,6 +224,9 @@ document.querySelectorAll("#promotion button").forEach((btn) => {
 // ============================================================
 socket.on("joined", (data) => {
   myColor = data.color;
+  // Show the chat so far (clear first so nothing appears twice).
+  $("messages").innerHTML = "";
+  data.chatLog.forEach(addMessage);
 });
 
 // The server sends the whole game every time something changes.
@@ -209,19 +238,27 @@ socket.on("state", (state) => {
   drawBoard();
 
   // Status line
+  const me = myColor || "w";
+  const them = me === "w" ? "b" : "w";
+
   let text = state.status.text;
   if (!state.players.w || !state.players.b) {
     text = "Waiting for your opponent to join… send them the invite link!";
   } else if (!gameOver && myColor === game.turn()) {
     text = "Your move! " + (game.inCheck() ? "You are in CHECK!" : "");
   }
+  if (myColor && state.players[them] && !state.players[them].online && !gameOver) {
+    text += ` (${state.players[them].name} is offline — they can come back with the same link.)`;
+  }
   $("status").textContent = text;
 
   // Player names above/below the board
-  const name = (c) => state.players[c] || "(waiting…)";
+  const name = (c) => {
+    const p = state.players[c];
+    if (!p) return "(waiting…)";
+    return p.name + (p.online ? "" : " (offline)");
+  };
   const icon = (c) => (c === "w" ? "⚪" : "⚫");
-  const me = myColor || "w";
-  const them = me === "w" ? "b" : "w";
   $("me-label").textContent = `${icon(me)} ${name(me)}${myColor ? " (you)" : ""}`;
   $("opponent-label").textContent = `${icon(them)} ${name(them)}`;
   $("new-game-btn").hidden = !myColor;
@@ -270,9 +307,10 @@ function addMessage(msg) {
   $("messages").scrollTop = $("messages").scrollHeight;
 }
 
-// If the connection drops and comes back, rejoin the room.
+// If the connection drops and comes back (e.g. your phone was
+// asleep), rejoin the room automatically.
+let firstConnect = true;
 socket.on("connect", () => {
-  if (!$("game").hidden) {
-    socket.emit("join", { room: roomId, name: localStorage.getItem("chessName") || "Player" });
-  }
+  if (!firstConnect && !$("game").hidden) joinRoom();
+  firstConnect = false;
 });

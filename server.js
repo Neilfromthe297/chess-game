@@ -29,7 +29,11 @@ app.use("/lib", express.static(path.join(__dirname, "node_modules/chess.js/dist/
 
 // ------------------------------------------------------------
 //  Game rooms. Each room is one game between two players.
-//  rooms = { "abc123": { chess, players: { w, b }, lastMove } }
+//  rooms = { "abc123": { chess, players: { w, b }, lastMove, chatLog } }
+//
+//  Each player's browser has its own secret "playerId" (saved in
+//  the browser). When you refresh, the server sees the same
+//  playerId and gives you back your seat, so the game carries on.
 // ------------------------------------------------------------
 const rooms = new Map();
 
@@ -37,12 +41,25 @@ function getRoom(roomId) {
   if (!rooms.has(roomId)) {
     rooms.set(roomId, {
       chess: new Chess(),
-      players: { w: null, b: null }, // each is { id, name } or null
+      // each seat is { playerId, name, sockets: Set } or null
+      players: { w: null, b: null },
       lastMove: null,
+      chatLog: [],              // recent chat, re-sent after a refresh
+      lastActive: Date.now(),
     });
   }
   return rooms.get(roomId);
 }
+
+// Games are kept even when everyone leaves, so people can come
+// back. Once an hour, tidy up games nobody has touched in 24 hours.
+const ONE_DAY = 24 * 60 * 60 * 1000;
+setInterval(() => {
+  for (const [id, room] of rooms) {
+    const connected = io.sockets.adapter.rooms.get(id)?.size || 0;
+    if (connected === 0 && Date.now() - room.lastActive > ONE_DAY) rooms.delete(id);
+  }
+}, 60 * 60 * 1000);
 
 // Work out a human-readable status line for the game.
 function describeStatus(chess) {
@@ -68,15 +85,28 @@ function broadcastState(roomId) {
     lastMove: room.lastMove,
     history: room.chess.history(),  // list of moves like ["e4","e5"]
     status: describeStatus(room.chess),
-    players: {
-      w: room.players.w ? room.players.w.name : null,
-      b: room.players.b ? room.players.b.name : null,
-    },
+    players: { w: seatInfo(room.players.w), b: seatInfo(room.players.b) },
   });
 }
 
+// What everyone is allowed to see about a seat (not the secret id).
+function seatInfo(seat) {
+  return seat ? { name: seat.name, online: seat.sockets.size > 0 } : null;
+}
+
+// Send a chat line to the room and remember it for refreshes.
+function sendChat(roomId, msg) {
+  const room = rooms.get(roomId);
+  if (room) {
+    room.chatLog.push(msg);
+    if (room.chatLog.length > 100) room.chatLog.shift(); // keep the last 100
+    room.lastActive = Date.now();
+  }
+  io.to(roomId).emit("chat", msg);
+}
+
 function systemMessage(roomId, text) {
-  io.to(roomId).emit("chat", { system: true, text });
+  sendChat(roomId, { system: true, text });
 }
 
 // ------------------------------------------------------------
@@ -92,21 +122,38 @@ io.on("connection", (socket) => {
   socket.on("join", (data) => {
     roomId = String(data.room || "").slice(0, 40);
     myName = String(data.name || "Player").trim().slice(0, 20) || "Player";
-    if (!roomId) return;
+    const playerId = String(data.playerId || "").slice(0, 64);
+    if (!roomId || !playerId) return;
 
     const room = getRoom(roomId);
     socket.join(roomId);
+    room.lastActive = Date.now();
 
-    // Give them a free seat: white first, then black.
-    if (!room.players.w) myColor = "w";
-    else if (!room.players.b) myColor = "b";
-    else myColor = null; // room is full: they can watch
+    // 1) Is this someone coming back? Give them their old seat.
+    // 2) Otherwise take a free seat: white first, then black.
+    // 3) Otherwise the game is full, so they watch.
+    let returning = true;
+    if (room.players.w?.playerId === playerId) myColor = "w";
+    else if (room.players.b?.playerId === playerId) myColor = "b";
+    else {
+      returning = false;
+      if (!room.players.w) myColor = "w";
+      else if (!room.players.b) myColor = "b";
+      else myColor = null;
+      if (myColor) room.players[myColor] = { playerId, name: myName, sockets: new Set() };
+    }
 
-    if (myColor) room.players[myColor] = { id: socket.id, name: myName };
+    if (myColor) {
+      const seat = room.players[myColor];
+      seat.name = myName;
+      seat.sockets.add(socket.id);
+    }
 
-    socket.emit("joined", { color: myColor });
+    // Send them their colour plus the chat so far.
+    socket.emit("joined", { color: myColor, chatLog: room.chatLog });
+
     const role = myColor === "w" ? "White" : myColor === "b" ? "Black" : "a spectator";
-    systemMessage(roomId, `${myName} joined as ${role}.`);
+    if (!returning) systemMessage(roomId, `${myName} joined as ${role}.`);
     broadcastState(roomId);
   });
 
@@ -127,6 +174,7 @@ io.on("connection", (socket) => {
         promotion: move.promotion || "q",
       });
       room.lastMove = { from: result.from, to: result.to };
+      room.lastActive = Date.now();
       broadcastState(roomId);
     } catch (err) {
       socket.emit("errorMessage", "Illegal move.");
@@ -138,7 +186,7 @@ io.on("connection", (socket) => {
     if (!roomId) return;
     text = String(text || "").trim().slice(0, 300);
     if (!text) return;
-    io.to(roomId).emit("chat", { name: myName, color: myColor, text });
+    sendChat(roomId, { name: myName, color: myColor, text });
   });
 
   // Start a fresh game (only the two players can do this).
@@ -151,19 +199,16 @@ io.on("connection", (socket) => {
     broadcastState(roomId);
   });
 
-  // A player closes the tab or loses connection.
+  // A player refreshes, closes the tab, or their phone loses
+  // connection. We KEEP their seat and the game, and just mark
+  // them offline, so they can come straight back.
   socket.on("disconnect", () => {
     const room = rooms.get(roomId);
     if (!room) return;
-    if (myColor && room.players[myColor]?.id === socket.id) {
-      room.players[myColor] = null; // free their seat so they can rejoin
-    }
-    systemMessage(roomId, `${myName} left.`);
+    room.lastActive = Date.now();
+    const seat = myColor && room.players[myColor];
+    if (seat) seat.sockets.delete(socket.id); // shows "(offline)" when 0
     broadcastState(roomId);
-
-    // Delete the room when nobody is left in it.
-    const left = io.sockets.adapter.rooms.get(roomId);
-    if (!left || left.size === 0) rooms.delete(roomId);
   });
 });
 
