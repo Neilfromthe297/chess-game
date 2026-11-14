@@ -12,6 +12,11 @@
 import { Chess } from "/lib/chess.js";
 import { Computer, LEVELS, levelFor } from "./computer.js";
 
+// The coaches (names, ratings, personalities) live in coaches.json,
+// which the server also uses for the AI coach.
+const COACHES = await fetch("coaches.json").then((r) => r.json()).catch(() => []);
+const coachById = (id) => COACHES.find((c) => c.id === id);
+
 const socket = io();
 const $ = (id) => document.getElementById(id);
 const boardEl = $("board");
@@ -105,7 +110,10 @@ function showMenu() {
   $("game").hidden = true;
   $("invite-card").hidden = !roomId;          // came from an invite link
   $("continue-card").hidden = !!roomId || !load("chessLastRoom");
-  if (load("chessLastRoom") === "computer") $("continue-btn").textContent = "🤖 Continue your game vs the computer";
+  if (load("chessLastRoom") === "computer") {
+    const c = coachById(load("chessBot")?.coach);
+    $("continue-btn").textContent = c ? `${c.emoji} Continue your lesson with ${c.name}` : "🤖 Continue your game vs the computer";
+  }
   if (params.get("notfound")) {
     showNotice("That game doesn't exist any more. Create a new one or pick one from the list!");
     history.replaceState(null, "", location.pathname);
@@ -164,6 +172,53 @@ $("bot-btn").addEventListener("click", () => {
   if (color === "random") color = Math.random() < 0.5 ? "w" : "b";
   save("chessBotLevel", rating);
   save("chessBot", { rating, color, moves: [], result: null });
+  save("chessLastRoom", "computer");
+  location.href = location.pathname + "?vs=computer";
+});
+
+// ---------- Learn with a Coach ----------
+for (const c of COACHES) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.value = c.id;
+  b.innerHTML = '<span class="c-emoji"></span><span class="c-name"></span><span class="c-rating"></span>';
+  b.querySelector(".c-emoji").textContent = c.emoji;
+  b.querySelector(".c-name").textContent = c.name.replace("Coach ", "");
+  b.querySelector(".c-rating").textContent = c.rating;
+  $("coach-pick").appendChild(b);
+}
+function showCoachHint(id) {
+  const c = coachById(id);
+  if (c) $("coach-hint").textContent = `${c.emoji} ${c.name} (${c.rating}, ${c.title}): ${c.specialty}.`;
+}
+if (COACHES.length) {
+  const savedCoach = load("chessCoach");
+  const first = $("coach-pick").querySelector(`[data-value="${savedCoach}"]`) || $("coach-pick").children[1] || $("coach-pick").firstChild;
+  first.classList.add("on");
+  showCoachHint(first.dataset.value);
+  setupToggle("coach-pick", showCoachHint);
+}
+setupToggle("coach-color");
+
+// Is the AI switched on? (Shown under the button.)
+fetch("api/coach/status")
+  .then((r) => r.json())
+  .then((s) => {
+    $("coach-ai-status").textContent = s.ai
+      ? "✨ Coaches are powered by AI."
+      : "Coaches are using built-in tips (the AI isn't switched on yet).";
+  })
+  .catch(() => {});
+
+$("coach-btn").addEventListener("click", () => {
+  const name = $("name-input").value.trim();
+  if (name) save("chessName", name);
+  const coach = coachById(toggleValue("coach-pick"));
+  if (!coach) return;
+  let color = toggleValue("coach-color");
+  if (color === "random") color = Math.random() < 0.5 ? "w" : "b";
+  save("chessCoach", coach.id);
+  save("chessBot", { rating: coach.rating, color, moves: [], result: null, coach: coach.id, chat: [], marks: [] });
   save("chessLastRoom", "computer");
   location.href = location.pathname + "?vs=computer";
 });
@@ -432,6 +487,8 @@ function drawBoard() {
       if (lastMove && (square === lastMove.from || square === lastMove.to)) el.classList.add("hl");
       if (square === selected) el.classList.add("hl");
       if (square === checkSquare) el.classList.add("check");
+      if (hintMove && square === hintMove.from) el.classList.add("hint-from");
+      if (hintMove?.reveal && square === hintMove.to) el.classList.add("hint-to");
       const t = targets.find((m) => m.to === square);
       if (t) el.classList.add("target", t.captured ? "capture" : "move");
 
@@ -615,7 +672,7 @@ function drawPlayerBar(el, color) {
 
   const avatar = document.createElement("div");
   avatar.className = "avatar " + color + (p?.bot ? " bot" : "");
-  avatar.textContent = p?.bot ? "🤖" : p ? p.name[0].toUpperCase() : "?";
+  avatar.textContent = p?.bot ? p.emoji || "🤖" : p ? p.name[0].toUpperCase() : "?";
   const dot = document.createElement("span");
   dot.className = "dot" + (p?.online ? " on" : "");
   dot.title = p?.online ? "Online" : "Offline";
@@ -677,6 +734,14 @@ function drawMoves() {
       const mv = document.createElement("span");
       mv.className = "mv" + (j === san.length - 1 ? " current" : "");
       mv.textContent = san[j] || "";
+      const mark = botMode && bot?.marks?.[j];
+      if (mark && MARKS[mark]) {
+        const badge = document.createElement("span");
+        badge.className = "mark " + mark;
+        badge.textContent = MARKS[mark];
+        badge.title = mark;
+        mv.appendChild(badge);
+      }
       row.appendChild(mv);
     }
     box.appendChild(row);
@@ -691,7 +756,7 @@ function drawPanel() {
   if (roomMeta) {
     $("room-name").textContent = roomMeta.name;
     document.title = roomMeta.name + " · Chess with Friends";
-    $("room-kind").textContent = roomMeta.bot ? "🤖 Computer game" : roomMeta.isPrivate ? "🔒 Private" : "🌍 Public";
+    $("room-kind").textContent = roomMeta.coach ? "🎓 Coach lesson" : roomMeta.bot ? "🤖 Computer game" : roomMeta.isPrivate ? "🔒 Private" : "🌍 Public";
     $("code-box").hidden = !roomMeta.isPrivate;
     $("room-code").textContent = roomMeta.code || "";
   }
@@ -702,7 +767,7 @@ function drawPanel() {
   else if (waiting) text = "Waiting for your opponent — send them the invite link!";
   else if (!myColor) text = "You are watching this game.";
   else if (game.turn() === myColor) text = game.inCheck() ? "Your move — you're in check!" : "Your move";
-  else text = botMode ? "Computer is thinking" : `Waiting for ${players[opp].name} to move…`;
+  else text = botMode ? `${players[opp].name.replace(/ \(\d+\)$/, "")} is thinking` : `Waiting for ${players[opp].name} to move…`;
   $("status").classList.toggle("thinking", botMode && !status.over && game.turn() !== myColor);
   if (myColor && players[opp] && !players[opp].online && !status.over) {
     text += ` (${players[opp].name} is offline)`;
@@ -725,10 +790,13 @@ function drawPanel() {
   $("watch-info").hidden = botMode;
   if (botMode) {
     // Against the computer the "Draw" button becomes "Takeback".
-    $("draw-btn").textContent = "↶ Takeback";
+    $("draw-btn").textContent = "↶ Undo";
     $("draw-btn").title = "Take back your last move";
     $("draw-btn").disabled = myMoveCount() === 0 || status.type === "resign";
     $("new-game-btn").disabled = false;
+    $("hint-btn").hidden = !coach;
+    $("hint-btn").disabled = status.over || game.turn() !== myColor;
+    $("hint-btn").textContent = hintMove && !hintMove.reveal ? "💡 Answer" : "💡 Hint";
   }
 }
 
@@ -831,8 +899,9 @@ $("chat-form").addEventListener("submit", (e) => {
   e.preventDefault(); // stop the page reloading
   const text = $("chat-input").value.trim();
   if (!text) return;
-  socket.emit("chat", text);
   $("chat-input").value = "";
+  if (botMode && coach) askCoach(text);
+  else socket.emit("chat", text);
 });
 
 socket.on("chatLog", (log) => {
@@ -894,10 +963,21 @@ function startBotGame() {
   }
   $("lobby").hidden = true;
   $("game").hidden = false;
-  document.querySelector(".chat").hidden = true; // nobody to chat with
+  coach = coachById(bot.coach) || null;
   $("rematch-btn").textContent = "Play Again";
   computer = new Computer();
   computer.newGame();
+  if (coach) {
+    // Lessons use the chat box to talk to your coach.
+    bot.chat ||= [];
+    bot.marks ||= [];
+    $("chat-input").placeholder = `Ask ${coach.name} a question…`;
+    document.querySelector(".panel").classList.add("coach-mode");
+    redrawCoachChat();
+    if (bot.chat.length === 0) coachSay("greet");
+  } else {
+    document.querySelector(".chat").hidden = true; // nobody to chat with
+  }
   botUpdate();
 }
 
@@ -926,17 +1006,29 @@ function botUpdate() {
   else if (g.isThreefoldRepetition()) st = { over: true, title: "Draw", reason: "by repetition" };
   else if (g.isInsufficientMaterial()) st = { over: true, title: "Draw", reason: "by insufficient material" };
   else if (g.isDraw()) st = { over: true, title: "Draw", reason: "by 50-move rule" };
+  if (coach && st.title === "Computer won") st.title = `${coach.name} won`;
+  // Positions change, so an old hint no longer applies.
+  if (hintMove && hintMove.ply !== bot.moves.length) hintMove = null;
+  // Coach says something when the game ends.
+  if (coach && st.over && !bot.endSaid) {
+    bot.endSaid = true;
+    coachSay("end", { result: `${st.title} ${st.reason}` });
+  }
 
   const level = levelFor(bot.rating);
   applyState({
-    meta: { name: `Computer · ${level.rating} ${level.label}`, bot: true },
+    meta: coach
+      ? { name: `Lesson with ${coach.name}`, bot: true, coach: true }
+      : { name: `Computer · ${level.rating} ${level.label}`, bot: true },
     moves: bot.moves.slice(),
     lastMove: last,
     status: st,
     drawOffer: null,
     players: {
       [me]: { name: load("chessName") || "You", online: true },
-      [cpu]: { name: `Computer (${level.rating})`, online: true, bot: true },
+      [cpu]: coach
+        ? { name: `${coach.name} (${coach.rating})`, online: true, bot: true, emoji: coach.emoji }
+        : { name: `Computer (${level.rating})`, online: true, bot: true },
     },
     spectators: 0,
     you: me,
@@ -954,6 +1046,7 @@ async function computerTurn() {
   if (thinking || status.over || game.turn() === bot.color) return;
   thinking = true;
   const version = botVersion;
+  if (coach) await reviewLastMove(version); // the coach judges your move first
   const started = Date.now();
   const move = await computer.chooseMove(game, bot.rating);
   // Wait at least ~0.6 s so the reply doesn't feel instant.
@@ -968,6 +1061,9 @@ async function computerTurn() {
   if (move) {
     bot.moves.push(move.from + move.to + (move.promotion || ""));
     botUpdate();
+    // Analyse the new position in the background, ready to judge your
+    // next move (and for hints).
+    if (coach && !status.over) analyzeFen(game);
   }
 }
 
@@ -982,6 +1078,12 @@ function botNewGame() {
   computer.newGame();
   bot.moves = [];
   bot.result = null;
+  if (coach) {
+    bot.marks = [];
+    bot.endSaid = false;
+    bot.quiet = 0;
+    addCoachLine("Let's play again! Take your time and think about each move. 😊");
+  }
   botUpdate();
 }
 
@@ -996,9 +1098,208 @@ function botTakeback() {
     bot.moves.pop();
   }
   bot.result = null;
+  if (coach) {
+    bot.marks.length = bot.moves.length;
+    bot.endSaid = false;
+    addCoachLine("No problem, let's try that again. What else could you play here?");
+  }
   botUpdate();
 }
 const turnAfter = (list) => (list.length % 2 === 0 ? "w" : "b");
+
+
+// ============================================================
+//  THE COACH
+//  Stockfish (at full strength) checks each of your moves. The
+//  coach then talks about it: the server asks the AI to explain
+//  it in a friendly way. If the AI isn't available, the coach
+//  uses built-in tips instead.
+// ============================================================
+let coach = null;        // the chosen coach from coaches.json
+let hintMove = null;     // { from, to, reveal, ply } while a hint is showing
+const analysisCache = new Map(); // fen -> { best, cp }
+const MARKS = { best: "★", inaccuracy: "?!", mistake: "?", blunder: "??" };
+
+function replayMoves(list) {
+  const g = new Chess();
+  for (const m of list) g.move({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] });
+  return g;
+}
+
+async function analyzeFen(g) {
+  const fen = g.fen();
+  if (!analysisCache.has(fen)) analysisCache.set(fen, computer.analyze(g));
+  return analysisCache.get(fen);
+}
+
+// How good was the move? Compare the engine's score before and after.
+function classify(before, after, playedUci) {
+  const clamp = (v) => Math.max(-1500, Math.min(1500, v));
+  const sign = bot.color === "w" ? 1 : -1;
+  const loss = sign * (clamp(before.cp) - clamp(after.cp)); // how much worse it got for you
+  if (playedUci === before.best || loss <= 15) return "best";
+  if (loss <= 60) return "good";
+  if (loss <= 130) return "inaccuracy";
+  if (loss <= 280) return "mistake";
+  return "blunder";
+}
+
+async function reviewLastMove(version) {
+  const ply = bot.moves.length - 1;
+  if (ply < 0 || bot.marks[ply]) return;
+  if (turnAfter(bot.moves.slice(0, ply)) !== bot.color) return; // last move wasn't yours
+  const before = await analyzeFen(replayMoves(bot.moves.slice(0, ply)));
+  const after = await analyzeFen(replayMoves(bot.moves));
+  if (version !== botVersion || !before || !after) return;
+  const cls = classify(before, after, bot.moves[ply]);
+  bot.marks[ply] = cls;
+  save("chessBot", bot);
+  drawMoves();
+
+  // Don't comment on every move: always on mistakes, sometimes otherwise.
+  bot.quiet = (bot.quiet || 0) + 1;
+  const firstMove = myMoveCount() === 1;
+  const talk =
+    cls === "blunder" || cls === "mistake" || firstMove ||
+    (cls === "inaccuracy" && Math.random() < 0.6) ||
+    (cls === "best" && Math.random() < 0.35) ||
+    bot.quiet >= 4;
+  if (talk) {
+    bot.quiet = 0;
+    coachSay("move", { ply, cls, bestUci: before.best, evalBefore: before.cp, evalAfter: after.cp }, version);
+  }
+}
+
+// ---------- Hint button ----------
+$("hint-btn").addEventListener("click", async () => {
+  if (!coach || status.over || game.turn() !== bot.color) return;
+  const a = await analyzeFen(game);
+  if (!a?.best) return;
+  const reveal = !!hintMove; // second press shows the answer
+  hintMove = { from: a.best.slice(0, 2), to: a.best.slice(2, 4), reveal, ply: bot.moves.length };
+  render();
+  coachSay("hint", { bestUci: a.best, reveal });
+});
+
+// ---------- Talking ----------
+function askCoach(question) {
+  bot.chat.push({ from: "player", text: question.slice(0, 300) });
+  save("chessBot", bot);
+  redrawCoachChat();
+  coachSay("question", { question });
+}
+
+function addCoachLine(text) {
+  bot.chat.push({ from: "coach", text });
+  if (bot.chat.length > 60) bot.chat.splice(0, bot.chat.length - 60);
+  save("chessBot", bot);
+  redrawCoachChat();
+}
+
+function redrawCoachChat(typing = false) {
+  $("messages").innerHTML = "";
+  for (const m of bot.chat) {
+    addMessage(
+      m.from === "coach"
+        ? { name: coach.emoji + " " + coach.name, color: "coach", text: m.text }
+        : { name: load("chessName") || "You", color: bot.color, text: m.text },
+      false
+    );
+  }
+  if (typing) {
+    const div = document.createElement("div");
+    div.className = "typing";
+    div.textContent = `${coach.name} is typing…`;
+    $("messages").appendChild(div);
+    $("messages").scrollTop = $("messages").scrollHeight;
+  }
+}
+
+let typingCount = 0;
+async function coachSay(kind, extra = {}, version = botVersion) {
+  typingCount++;
+  redrawCoachChat(true);
+  let text = null;
+  try {
+    const res = await fetch("api/coach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        coachId: coach.id,
+        kind,
+        playerName: load("chessName") || "",
+        playerColor: bot.color,
+        moves: bot.moves,
+        history: bot.chat.slice(-8),
+        ...extra,
+      }),
+    });
+    const data = await res.json();
+    if (data.text) text = data.text;
+  } catch {}
+  typingCount--;
+  // A comment about a move you've since taken back is out of date.
+  if (kind === "move" && version !== botVersion) {
+    redrawCoachChat(typingCount > 0);
+    return;
+  }
+  addCoachLine(text || builtInTip(kind, extra));
+  if (typingCount > 0) redrawCoachChat(true);
+}
+
+// ---------- Built-in tips (used when the AI isn't available) ----------
+function moveWords(beforeMoves, uci) {
+  if (!uci) return "";
+  try {
+    const m = replayMoves(beforeMoves).move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
+    const names = { p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king" };
+    return `${m.san} (your ${names[m.piece]} to ${m.to})`;
+  } catch {
+    return uci;
+  }
+}
+
+const PRINCIPLES = [
+  "Before every move, check: is my piece safe where it's going?",
+  "In the opening, control the centre with pawns and bring out your knights and bishops.",
+  "Castle early to keep your king safe.",
+  "Look for checks, captures and threats — for you AND your opponent.",
+  "Every piece should have a job. Find your least active piece and improve it.",
+  "When you're ahead in material, trading pieces makes it easier to win.",
+];
+const pick = (list) => list[Math.floor(Math.random() * list.length)];
+
+function builtInTip(kind, extra) {
+  switch (kind) {
+    case "greet":
+      return coach.greeting;
+    case "move": {
+      const best = moveWords(bot.moves.slice(0, extra.ply), extra.bestUci);
+      if (extra.cls === "blunder") return `Oops — that move lets me win something big. A stronger idea was ${best}. Press ↶ Undo and have another look!`;
+      if (extra.cls === "mistake") return `Hmm, that wasn't the best. ${best} was stronger. Always check what your opponent can do next!`;
+      if (extra.cls === "inaccuracy") return `Not bad, but ${best} was a little better.`;
+      if (extra.cls === "best") return pick(["Excellent move! That's exactly what I'd play. ⭐", "Great find — that's the best move here!", "Perfect! You're playing really well."]);
+      return pick(["Nice, solid move. Keep it up!", "Good move! " + pick(PRINCIPLES)]);
+    }
+    case "hint": {
+      const g = new Chess(game.fen());
+      const p = g.get(extra.bestUci.slice(0, 2));
+      const names = { p: "pawn", n: "knight", b: "bishop", r: "rook", q: "queen", k: "king" };
+      return extra.reveal
+        ? `The best move here is ${moveWords(bot.moves, extra.bestUci)}. Can you see why it's good?`
+        : `Take a look at your ${names[p?.type] || "piece"} on ${extra.bestUci.slice(0, 2)} — I've highlighted it in blue. Can it do something useful? (Press 💡 again to see the answer.)`;
+    }
+    case "question":
+      return `I can only give quick tips right now, but here's a good one: ${pick(PRINCIPLES)}`;
+    case "end":
+      return /^You won/.test(extra.result)
+        ? "Well played — you won! 🎉 Press Play Again for another game, or try a stronger coach."
+        : /^Draw/.test(extra.result)
+          ? "A draw — a good fighting game! Press Play Again to try for the win."
+          : "Good game! Every loss teaches you something. Use ↶ Undo to look at where things went wrong, or play again!";
+  }
+  return pick(PRINCIPLES);
+}
 
 // ============================================================
 //  START-UP (at the very end, so everything above is ready)

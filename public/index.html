@@ -59,6 +59,24 @@
           <button id="create-btn" class="btn btn-primary btn-big">Create Game</button>
         </div>
 
+        <div class="card coach-card">
+          <h2>🎓 Learn with a Coach</h2>
+          <p class="muted">Play a practice game while a friendly coach explains your moves, gives hints and answers your questions.</p>
+          <span class="label">Choose your coach</span>
+          <div class="coach-grid" id="coach-pick"></div>
+          <p class="hint" id="coach-hint"></p>
+
+          <span class="label">Play as</span>
+          <div class="toggle" id="coach-color">
+            <button type="button" data-value="w" class="on"><img src="pieces/wK.svg" alt="" />White</button>
+            <button type="button" data-value="random">🎲 Random</button>
+            <button type="button" data-value="b"><img src="pieces/bK.svg" alt="" />Black</button>
+          </div>
+
+          <button id="coach-btn" class="btn btn-primary btn-big">Start Lesson</button>
+          <p class="hint" id="coach-ai-status"></p>
+        </div>
+
         <div class="card">
           <h2>🤖 Play vs Computer</h2>
           <span class="label">Difficulty (rating)</span>
@@ -153,6 +171,7 @@
       <div class="actions">
         <button class="btn btn-secondary" id="draw-btn" title="Offer draw">½ Draw</button>
         <button class="btn btn-secondary" id="resign-btn" title="Resign">⚑ Resign</button>
+        <button class="btn btn-secondary" id="hint-btn" title="Ask your coach for a hint" hidden>💡 Hint</button>
         <button class="btn btn-secondary" id="flip-btn" title="Flip board">⇅ Flip</button>
         <button class="btn btn-secondary" id="new-game-btn" title="New game">＋ New</button>
       </div>

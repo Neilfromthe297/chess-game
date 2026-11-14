@@ -14,6 +14,7 @@ const http = require("http");
 const express = require("express");          // serves web pages
 const { Server } = require("socket.io");     // real-time messages
 const { Chess } = require("chess.js");       // chess rules
+const { setupCoach } = require("./coach");   // the AI chess coaches
 
 const app = express();
 const server = http.createServer(app);
@@ -22,7 +23,11 @@ const io = new Server(server);
 // Render tells us which port to use via PORT. Locally we use 3000.
 const PORT = process.env.PORT || 3000;
 
+// Render sits in front of our server, so trust it to tell us
+// each visitor's real IP address (used for the coach's limits).
+app.set("trust proxy", 1);
 app.use(express.static(path.join(__dirname, "public")));
+setupCoach(app);
 // Let the browser use chess.js too (to show legal moves).
 app.use("/lib", express.static(path.join(__dirname, "node_modules/chess.js/dist/esm")));
 

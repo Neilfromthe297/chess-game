@@ -546,3 +546,43 @@ input:focus { border-color: var(--green); }
   .moves { max-height: 140px; }
   .chat { height: 260px; }
 }
+
+/* ---------------- Coaches ---------------- */
+.coach-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; }
+.coach-grid button {
+  background: var(--panel-2);
+  border: 2px solid #45433f;
+  border-radius: 8px;
+  color: var(--muted);
+  padding: 8px 4px;
+  cursor: pointer;
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+}
+.coach-grid button.on { border-color: var(--green); background: #2f3a26; color: var(--text); }
+.coach-grid .c-emoji { font-size: 28px; line-height: 1.1; }
+.coach-grid .c-name { font-weight: 800; font-size: 13px; }
+.coach-grid .c-rating { font-size: 12px; opacity: 0.85; }
+
+/* move-quality badges in the move list */
+.mark { font-size: 11px; font-weight: 800; margin-left: 4px; padding: 0 4px; border-radius: 3px; }
+.mark.best       { color: #96bc4b; }
+.mark.inaccuracy { color: #f7c045; }
+.mark.mistake    { color: #e58f2a; }
+.mark.blunder    { color: #fff; background: #ca3431; }
+
+/* the coach's hint on the board */
+.square.hint-from { box-shadow: inset 0 0 0 5px #4aa3ff; }
+.square.hint-to   { box-shadow: inset 0 0 0 5px #4aa3ff; background-image: radial-gradient(circle, rgba(74,163,255,.55) 22%, transparent 24%); }
+
+/* coach chat */
+#messages .name.coach { color: #f0c15c; }
+#messages .typing { color: var(--faint); font-style: italic; }
+.actions { grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); }
+.actions .btn { white-space: nowrap; font-size: 12.5px; padding: 9px 2px; }
+/* in a lesson, the coach chat gets more room */
+.coach-mode .chat { height: 360px; }
+.coach-mode .moves { min-height: 70px; }

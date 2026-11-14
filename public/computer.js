@@ -118,6 +118,45 @@ export class Computer {
   }
 }
 
+// ------------------------------------------------------------
+//  ANALYSIS — used by the coaches to judge your moves.
+//  Returns { best: "e2e4", cp: 35 }: the best move, and the
+//  score in "centipawns" (100 = one pawn) from WHITE's side.
+//  A forced checkmate is shown as a very big number (±10000).
+// ------------------------------------------------------------
+Computer.prototype.analyze = function (game) {
+  const fen = game.fen();
+  const whiteToMove = game.turn() === "w";
+  const job = this.queue.then(() => this.runAnalysis(fen, whiteToMove));
+  this.queue = job.catch(() => {});
+  return job;
+};
+
+Computer.prototype.runAnalysis = async function (fen, whiteToMove) {
+  if (!(await this.ready)) return null;
+  // Full strength for judging moves.
+  this.send("setoption name UCI_LimitStrength value false");
+  this.send("setoption name Skill Level value 20");
+  this.send("position fen " + fen);
+
+  let score = null;
+  // Watch the "info ... score cp 34 ..." lines as Stockfish thinks.
+  const watch = (line) => {
+    const m = line.match(/ score (cp|mate) (-?\d+)/);
+    if (line.startsWith("info") && m) score = m[1] === "cp" ? Number(m[2]) : Math.sign(Number(m[2]) || 1) * (10000 - Math.abs(Number(m[2])) * 10);
+  };
+  const oldOnLine = this.onLine.bind(this);
+  this.onLine = (line) => { watch(line); oldOnLine(line); };
+  this.send("go depth 14 movetime 600");
+  const line = await this.waitFor("bestmove");
+  this.onLine = oldOnLine;
+
+  const best = line && line.split(" ")[1];
+  if (score === null) return { best, cp: 0 };
+  // Stockfish gives the score for the side to move; we want White's view.
+  return { best: best && best !== "(none)" ? best : null, cp: whiteToMove ? score : -score };
+};
+
 // If Stockfish can't load: grab the most valuable capture,
 // otherwise play a random move.
 function backupMove(legal) {

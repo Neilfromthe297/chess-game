@@ -2,7 +2,7 @@
 
 An online chess game with live chat. Two people play from their own web browsers, and anyone else who opens the link can watch.
 
-**Features:** play the computer (Stockfish, 7 difficulty levels from 400 to 3000) · public & private game lobbies with a live game list · play or spectate · secret codes for private games · drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
+**Features:** 7 friendly AI chess coaches (400–3000) who explain your moves, give hints and answer questions · play the computer (Stockfish, 7 difficulty levels from 400 to 3000) · public & private game lobbies with a live game list · play or spectate · secret codes for private games · drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
 
 ---
 
@@ -24,6 +24,8 @@ An online chess game with live chat. Two people play from their own web browsers
 | `public/style.css` | Colours, sizes, and how it looks on phones |
 | `public/client.js` | Draws the board, handles dragging & clicks, sounds, keeps a backup of the game |
 | `public/pieces/` | The chess piece pictures (SVG images) |
+| `coach.js` | The AI coach on the server: builds the facts, calls Claude, limits usage |
+| `public/coaches.json` | The 7 coaches: names, ratings, personalities |
 | `public/computer.js` | The computer opponent: talks to Stockfish and sets the difficulty |
 | `public/engine/` | The Stockfish chess engine (runs inside the player's browser) |
 | `package.json` | Lists the libraries the project needs |
@@ -119,12 +121,29 @@ Open it, start a game, click **Copy**, and send the link to your friend.
 3. To move, drag a piece, or click it and then click where it should go. Dots show the legal moves.
 4. Chat with the players and watchers in the chat box.
 5. Use **½ Draw**, **⚑ Resign**, **⇅ Flip** and **＋ New** (rematch with colours swapped) under the move list.
-6. **Play vs Computer:** pick a difficulty from 400 (Beginner) to 3000 (Maximum) and a colour. The computer runs in your own browser. Use **↶ Takeback** to undo a move. Refreshing the page keeps your game.
-7. Click **← Menu** to go back to the main menu. Leaving in the middle of a game counts as resigning, and your seat is freed for someone else.
+6. **Learn with a Coach:** pick a coach (Pip 400 → Atlas 3000). Each of your moves gets a mark (★ best, ?! inaccuracy, ? mistake, ?? blunder), the coach comments in the chat, **💡 Hint** highlights a piece (press again for the answer), and you can type questions to your coach.
+7. **Play vs Computer:** pick a difficulty from 400 (Beginner) to 3000 (Maximum) and a colour. The computer runs in your own browser. Use **↶ Undo** to take back a move. Refreshing the page keeps your game.
+8. Click **← Menu** to go back to the main menu. Leaving in the middle of a game counts as resigning, and your seat is freed for someone else.
 
 ---
 
-## 5. Ideas for what to learn next
+## 5. Switching on the AI coaches
+
+Without any setup, the coaches use built-in tips. To let them really talk (explain moves, answer questions) they use **Claude**, Anthropic's AI:
+
+1. Create an account at https://console.anthropic.com and add a payment method (Billing).
+2. Go to **API Keys → Create Key**, and copy the key (it starts with `sk-ant-`). Keep it secret — never put it in your code or on GitHub.
+3. On Render, open your service → **Environment** → **Add Environment Variable**:
+   * Key: `ANTHROPIC_API_KEY`
+   * Value: *(paste your key)*
+4. Click **Save Changes**. Render restarts the game (1–2 minutes).
+5. On the main menu, under **Learn with a Coach**, it should now say **✨ Coaches are powered by AI.**
+
+**Cost control:** each visitor can get at most 60 coach messages an hour and 300 a day, and the whole site at most 3000 a day. You can change these with the environment variables `COACH_LIMIT_PER_HOUR`, `COACH_LIMIT_PER_DAY` and `COACH_LIMIT_SITE_PER_DAY`. It's also a good idea to set a monthly spend limit in the Anthropic Console (**Settings → Limits**).
+
+---
+
+## 6. Ideas for what to learn next
 Try these in roughly this order. Each one teaches something new:
 
 1. **Change the colours.** Edit the `--light-square` and `--dark-square` values at the top of `style.css`.
@@ -146,3 +165,5 @@ taken from the open-source [chessground](https://github.com/lichess-org/chessgro
 The computer opponent is [Stockfish](https://stockfishchess.org) 18 (lite, single-threaded build) from the
 [stockfish.js](https://github.com/nmrugg/stockfish.js) project by Nathan Rugg, licensed under GPL-3.0
 (see `public/engine/COPYING.txt`).
+
+The AI coaches use [Claude](https://www.anthropic.com/claude) through the official `@anthropic-ai/sdk` package.
