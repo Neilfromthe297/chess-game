@@ -2,6 +2,8 @@
 
 An online chess game with live chat. Two people play from their own web browsers, and anyone else who opens the link can watch.
 
+**Features:** drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
+
 ---
 
 ## 1. How it works (the big picture)
@@ -20,7 +22,8 @@ An online chess game with live chat. Two people play from their own web browsers
 | `server.js` | The referee: rooms, move checking, chat relay |
 | `public/index.html` | The page layout: lobby, board, chat box |
 | `public/style.css` | Colours, sizes, and how it looks on phones |
-| `public/client.js` | Draws the board, handles clicks, sends and receives messages |
+| `public/client.js` | Draws the board, handles dragging & clicks, sounds, keeps a backup of the game |
+| `public/pieces/` | The chess piece pictures (SVG images) |
 | `package.json` | Lists the libraries the project needs |
 
 Libraries used:
@@ -126,3 +129,10 @@ Try these in roughly this order. Each one teaches something new:
 6. **Resign / offer draw** buttons.
 7. **Save games in a database** so they survive server restarts.
 8. **Turn it into an app.** Make the site a "PWA" (installable from the browser), or wrap it with **Capacitor** to publish it on the App Store and Google Play. Your HTML/CSS/JS code stays the same.
+
+---
+
+## Credits
+The piece images in `public/pieces/` are the "cburnett" set by Colin M.L. Burnett,
+taken from the open-source [chessground](https://github.com/lichess-org/chessground) project
+(GPL-3.0; the original artwork is also available under GPLv2+ / CC BY-SA 3.0).
