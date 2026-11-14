@@ -28,6 +28,7 @@ let selected = null;       // the square you picked up, e.g. "e2"
 let flipped = false;       // "Flip" button
 let chat = [];             // chat messages, kept for the backup
 let firstState = true;
+let spectators = 0;
 
 const pieceImg = (color, type) => `pieces/${color}${type.toUpperCase()}.svg`;
 
@@ -59,32 +60,215 @@ function saveBackup() {
     color: myColor,
     result: status.type ? { type: status.type, loser: status.loser } : null,
     chat: chat.slice(-100),
+    meta: roomMeta ? { name: roomMeta.name, isPrivate: roomMeta.isPrivate } : null,
   });
 }
 
 // ============================================================
-//  LOBBY
+//  MAIN MENU (LOBBY)
 // ============================================================
 const params = new URLSearchParams(location.search);
 roomId = params.get("room");
+const wantsToWatch = params.get("watch") === "1";
+let roomMeta = null;       // { name, isPrivate, code } of the current game
+let gameList = [];         // public games, sent by the server
 $("name-input").value = load("chessName") || "";
 
-if (roomId) {
-  $("lobby-text").textContent = "You've been invited to a game! Enter your name to join.";
-  $("start-btn").textContent = "Join Game";
-} else if (load("chessLastRoom")) {
-  // Came to the main page, but you have a game going: offer it.
-  $("continue-btn").hidden = false;
-  $("start-btn").textContent = "Start New Game";
+function showNotice(text) {
+  $("notice").textContent = text;
+  $("notice").hidden = !text;
+  if (text) window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
-function enterGame(room) {
-  const name = $("name-input").value.trim() || load("chessName") || "Player";
+// Read the name box. If it's empty, ask for a name and return null.
+function getName() {
+  const name = $("name-input").value.trim();
+  if (!name) {
+    showNotice("Please enter your name first.");
+    $("name-input").focus();
+    return null;
+  }
   save("chessName", name);
-  roomId = room || Math.random().toString(36).slice(2, 8);
+  return name;
+}
+
+// Open a game. This loads the page again with ?room=... in the
+// address, so the link can be shared and refreshing works.
+function goToRoom(id, watch) {
+  location.href = location.pathname + "?room=" + encodeURIComponent(id) + (watch ? "&watch=1" : "");
+}
+
+function showMenu() {
+  $("lobby").hidden = false;
+  $("game").hidden = true;
+  $("invite-card").hidden = !roomId;          // came from an invite link
+  $("continue-card").hidden = !!roomId || !load("chessLastRoom");
+  if (params.get("notfound")) {
+    showNotice("That game doesn't exist any more. Create a new one or pick one from the list!");
+    history.replaceState(null, "", location.pathname);
+  }
+  socket.emit("watchLobbies");
+}
+
+// The Public/Private and White/Random/Black pickers.
+function setupToggle(id, onChange) {
+  const box = $(id);
+  box.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    box.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+    if (onChange) onChange(btn.dataset.value);
+  });
+}
+const toggleValue = (id) => $(id).querySelector(".on").dataset.value;
+
+setupToggle("visibility", (v) => {
+  $("visibility-hint").textContent =
+    v === "private"
+      ? "Hidden from the list. Friends need the secret code (or your link) to join."
+      : "Anyone can see it in the list and join to play or watch.";
+});
+setupToggle("color-pick");
+
+// Suggest a game name based on the player's name.
+function updateGameNamePlaceholder() {
+  const n = $("name-input").value.trim();
+  $("game-name").placeholder = n ? `${n}'s game` : "e.g. Friday night chess";
+}
+$("name-input").addEventListener("input", () => { updateGameNamePlaceholder(); showNotice(""); });
+updateGameNamePlaceholder();
+
+// ---------- Create a game ----------
+$("create-btn").addEventListener("click", () => {
+  const name = getName();
+  if (!name) return;
+  $("create-btn").disabled = true;
+  socket.emit(
+    "create",
+    {
+      playerId,
+      playerName: name,
+      gameName: $("game-name").value.trim() || `${name}'s game`,
+      isPrivate: toggleValue("visibility") === "private",
+      color: toggleValue("color-pick"),
+    },
+    (reply) => {
+      $("create-btn").disabled = false;
+      if (reply.error) showNotice(reply.error);
+      else goToRoom(reply.roomId);
+    }
+  );
+});
+
+// ---------- Join a private game with a code ----------
+$("code-btn").addEventListener("click", () => {
+  const name = getName();
+  if (!name) return;
+  const code = $("code-input").value.trim().toUpperCase();
+  if (code.length !== 6) {
+    showNotice("Private game codes are 6 characters long.");
+    return;
+  }
+  socket.emit("checkCode", code, (reply) => {
+    if (reply.ok) goToRoom(reply.code);
+    else showNotice(`No private game found with the code "${code}". Check it and try again.`);
+  });
+});
+$("code-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("code-btn").click();
+});
+
+$("invite-join-btn").addEventListener("click", () => {
+  if (getName()) enterGame();
+});
+$("continue-btn").addEventListener("click", () => {
+  if (getName()) goToRoom(load("chessLastRoom"));
+});
+
+// ---------- The live list of public games ----------
+socket.on("lobbies", (list) => {
+  gameList = list;
+  drawGameList();
+});
+
+function seatLabel(color, p) {
+  const span = document.createElement("span");
+  const img = document.createElement("img");
+  img.src = pieceImg(color, "k");
+  img.alt = "";
+  span.appendChild(img);
+  if (p) {
+    span.append(p.name + (p.online ? "" : " (offline)"));
+  } else {
+    const open = document.createElement("span");
+    open.className = "open";
+    open.textContent = "Open seat";
+    span.appendChild(open);
+  }
+  return span;
+}
+
+function drawGameList() {
+  const box = $("game-list");
+  box.innerHTML = "";
+  if (gameList.length === 0) {
+    box.innerHTML =
+      '<div class="games-empty">No public games right now.<br>Create one and it will show up here for everyone!</div>';
+    return;
+  }
+  for (const g of gameList) {
+    const row = document.createElement("div");
+    row.className = "game-row";
+
+    const info = document.createElement("div");
+    info.style.minWidth = "0";
+    const name = document.createElement("div");
+    name.className = "game-row-name";
+    name.textContent = g.name;
+
+    const ps = document.createElement("div");
+    ps.className = "game-row-players";
+    const vs = document.createElement("span");
+    vs.className = "vs";
+    vs.textContent = "vs";
+    ps.append(seatLabel("w", g.players.w), vs, seatLabel("b", g.players.b));
+
+    const meta = document.createElement("div");
+    meta.className = "game-row-meta";
+    const badge = document.createElement("span");
+    badge.className = "badge " + g.state;
+    badge.textContent = { waiting: "Waiting", playing: "Playing", finished: "Finished" }[g.state];
+    const detail =
+      g.state === "waiting" ? "Needs a player" : g.state === "playing" ? `Move ${g.moveCount}` : "Game over";
+    meta.append(badge, `${detail} · 👁 ${g.spectators} watching`);
+    info.append(name, ps, meta);
+
+    const buttons = document.createElement("div");
+    buttons.className = "game-row-buttons";
+    if (g.openSeat) {
+      const play = document.createElement("button");
+      play.className = "btn btn-primary";
+      play.textContent = "Play";
+      play.addEventListener("click", () => { if (getName()) goToRoom(g.id); });
+      buttons.appendChild(play);
+    }
+    const watch = document.createElement("button");
+    watch.className = "btn btn-secondary";
+    watch.textContent = "Watch";
+    watch.addEventListener("click", () => { if (getName()) goToRoom(g.id, true); });
+    buttons.appendChild(watch);
+
+    row.append(info, buttons);
+    box.appendChild(row);
+  }
+}
+
+// ============================================================
+//  ENTERING AND LEAVING A GAME
+// ============================================================
+function enterGame() {
   save("chessLastRoom", roomId);
-  history.replaceState(null, "", `?room=${roomId}`);
-  $("invite-link").value = location.href;
+  $("invite-link").value = location.origin + location.pathname + "?room=" + roomId;
   $("lobby").hidden = true;
   $("game").hidden = false;
   chat = load("chessGame:" + roomId)?.chat || [];
@@ -96,18 +280,37 @@ function joinRoom() {
     room: roomId,
     name: load("chessName") || "Player",
     playerId,
+    want: wantsToWatch ? "watch" : "play",
     backup: load("chessGame:" + roomId), // lets the server restore the game
   });
 }
 
-$("start-btn").addEventListener("click", () => { unlockAudio(); enterGame(roomId); });
-$("continue-btn").addEventListener("click", () => { unlockAudio(); enterGame(load("chessLastRoom")); });
-$("name-input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter") $("start-btn").click();
+function forgetThisGame() {
+  try {
+    localStorage.removeItem("chessLastRoom");
+    localStorage.removeItem("chessGame:" + roomId);
+  } catch {}
+}
+
+// "← Menu" button: leave the game and go back to the main menu.
+$("menu-btn").addEventListener("click", () => {
+  const playing = myColor && !status.over && players.w && players.b && moves.length > 0;
+  if (playing && !confirm("Leave this game? Leaving in the middle of a game counts as resigning.")) return;
+  forgetThisGame();
+  const goHome = () => (location.href = location.pathname);
+  socket.emit("leave", goHome);
+  setTimeout(goHome, 1500); // just in case the server doesn't answer
 });
 
-// Refreshed, or came back via the link? Skip the lobby.
-if (roomId && load("chessName")) enterGame(roomId);
+// The server doesn't know this game (and we had no backup).
+socket.on("notFound", () => {
+  forgetThisGame();
+  location.replace(location.pathname + "?notfound=1");
+});
+
+// Start-up: show the game if we know who you are, otherwise the menu.
+if (roomId && load("chessName")) enterGame();
+else showMenu();
 
 // ============================================================
 //  SOUNDS — made with the Web Audio API, no sound files needed
@@ -441,7 +644,15 @@ function drawMoves() {
 function drawPanel() {
   const opp = myColor === "w" ? "b" : "w";
   const waiting = !players.w || !players.b;
-  $("invite").hidden = !waiting && !!myColor;
+  $("invite").hidden = !waiting;
+  if (roomMeta) {
+    $("room-name").textContent = roomMeta.name;
+    document.title = roomMeta.name + " · Chess with Friends";
+    $("room-kind").textContent = roomMeta.isPrivate ? "🔒 Private" : "🌍 Public";
+    $("code-box").hidden = !roomMeta.isPrivate;
+    $("room-code").textContent = roomMeta.code || "";
+  }
+  $("watchers").textContent = spectators;
 
   let text = "";
   if (status.over) text = `${status.title} ${status.reason}`;
@@ -464,6 +675,7 @@ function drawPanel() {
   $("draw-btn").disabled = !playing || !!drawOffer || moves.length < 2;
   $("resign-btn").disabled = !playing;
   $("new-game-btn").hidden = !myColor;
+  $("new-game-btn").disabled = waiting && moves.length === 0;
   $("draw-btn").hidden = $("resign-btn").hidden = !myColor;
 }
 
@@ -522,6 +734,8 @@ socket.on("state", (s) => {
   status = s.status;
   players = s.players;
   drawOffer = s.drawOffer;
+  roomMeta = s.meta;
+  spectators = s.spectators;
   if (myColor !== s.you) flipped = false;
   myColor = s.you;
   if (!drag) selected = null;
@@ -589,6 +803,9 @@ function addMessage(msg, keep = true) {
 // up): join again, sending our backup in case it's needed.
 let firstConnect = true;
 socket.on("connect", () => {
-  if (!firstConnect && !$("game").hidden) joinRoom();
+  if (!firstConnect) {
+    if (!$("game").hidden) joinRoom();
+    else socket.emit("watchLobbies");
+  }
   firstConnect = false;
 });

@@ -10,14 +10,74 @@
 </head>
 <body>
   <!-- ============ SCREEN 1: LOBBY ============ -->
-  <section id="lobby">
-    <div class="lobby-card">
-      <img class="lobby-logo" src="pieces/wN.svg" alt="" />
+  <section id="lobby" hidden>
+    <header class="menu-header">
+      <img src="pieces/wN.svg" alt="" />
       <h1>Chess with Friends</h1>
-      <p id="lobby-text">Play chess online with a friend — free, no sign-up.</p>
-      <input id="name-input" type="text" maxlength="20" placeholder="Your name" autocomplete="nickname" />
-      <button id="start-btn" class="btn btn-primary btn-big">Play a Friend</button>
-      <button id="continue-btn" class="btn btn-secondary" hidden>Continue your last game</button>
+    </header>
+
+    <div id="notice" class="notice" hidden></div>
+
+    <div class="menu-grid">
+      <!-- Left column: your name, create a game, join with a code -->
+      <div class="menu-col">
+        <div class="card">
+          <label class="label" for="name-input">Your name</label>
+          <input id="name-input" type="text" maxlength="20" placeholder="Enter your name" autocomplete="nickname" />
+        </div>
+
+        <div class="card" id="invite-card" hidden>
+          <h2>You've been invited!</h2>
+          <p class="muted">Enter your name above, then join the game.</p>
+          <button id="invite-join-btn" class="btn btn-primary btn-big">Join Game</button>
+        </div>
+
+        <div class="card" id="continue-card" hidden>
+          <h2>Your last game</h2>
+          <button id="continue-btn" class="btn btn-secondary">Continue your last game</button>
+        </div>
+
+        <div class="card">
+          <h2>Create a game</h2>
+          <label class="label" for="game-name">Game name</label>
+          <input id="game-name" type="text" maxlength="30" placeholder="e.g. Friday night chess" />
+
+          <span class="label">Who can join?</span>
+          <div class="toggle" id="visibility">
+            <button type="button" data-value="public" class="on">🌍 Public</button>
+            <button type="button" data-value="private">🔒 Private</button>
+          </div>
+          <p class="hint" id="visibility-hint">Anyone can see it in the list and join to play or watch.</p>
+
+          <span class="label">Play as</span>
+          <div class="toggle" id="color-pick">
+            <button type="button" data-value="w" class="on"><img src="pieces/wK.svg" alt="" />White</button>
+            <button type="button" data-value="random">🎲 Random</button>
+            <button type="button" data-value="b"><img src="pieces/bK.svg" alt="" />Black</button>
+          </div>
+
+          <button id="create-btn" class="btn btn-primary btn-big">Create Game</button>
+        </div>
+
+        <div class="card">
+          <h2>Join a private game</h2>
+          <div class="code-row">
+            <input id="code-input" type="text" maxlength="6" placeholder="CODE" autocomplete="off" />
+            <button id="code-btn" class="btn btn-primary">Join</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right column: the list of public games -->
+      <div class="menu-col">
+        <div class="card games-card">
+          <div class="games-head">
+            <h2>Public games</h2>
+            <span class="live"><span class="live-dot"></span>Live</span>
+          </div>
+          <div id="game-list"></div>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -44,14 +104,21 @@
     <!-- Right: side panel -->
     <aside class="panel">
       <div class="panel-head">
-        <img src="pieces/wP.svg" alt="" /> Play vs Friend
+        <button class="menu-btn" id="menu-btn" title="Back to main menu">← Menu</button>
+        <div class="room-title">
+          <div id="room-name">Chess game</div>
+          <div class="room-sub"><span id="room-kind"></span> · <span id="watchers">0</span> watching</div>
+        </div>
       </div>
 
       <div class="invite" id="invite">
-        <div class="invite-title">Invite a friend to play</div>
+        <div class="invite-title">Invite a friend</div>
+        <div class="code-box" id="code-box" hidden>
+          Secret code: <strong id="room-code"></strong>
+        </div>
         <div class="invite-row">
           <input id="invite-link" readonly />
-          <button id="copy-btn" class="btn btn-primary">Copy</button>
+          <button id="copy-btn" class="btn btn-primary">Copy link</button>
         </div>
       </div>
 

@@ -2,7 +2,7 @@
 
 An online chess game with live chat. Two people play from their own web browsers, and anyone else who opens the link can watch.
 
-**Features:** drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
+**Features:** public & private game lobbies with a live game list · play or spectate · secret codes for private games · drag-and-drop or click-to-move · legal-move dots · last-move highlights · captured pieces & material score · move list · sounds · resign, draw offers and rematch (colours swap) · chat · games survive refreshes and server restarts (each browser keeps a backup copy) · works on phones.
 
 ---
 
@@ -110,11 +110,14 @@ Open it, start a game, click **Copy**, and send the link to your friend.
 ---
 
 ## 4. How to play
-1. Enter your name and click **Start game**. You are White.
-2. Click **Copy** and send the link to your friend. They join as Black.
-3. To move, click one of your pieces (dots show where it can go), then click the square you want.
-4. Use the chat box on the right to talk.
-5. A third person who opens the link can watch and chat but can't move pieces.
+1. Open the site and type your name.
+2. **Create a game:** give it a name, choose **Public** or **Private**, and pick your colour (White, Black or Random).
+   * **Public** games appear in the *Public games* list on the main menu. Anyone can click **Play** (if a seat is free) or **Watch**.
+   * **Private** games are hidden from the list. They get a secret 6-letter code. Send the code (or the invite link) to your friend, who types it into **Join a private game**.
+3. To move, drag a piece, or click it and then click where it should go. Dots show the legal moves.
+4. Chat with the players and watchers in the chat box.
+5. Use **½ Draw**, **⚑ Resign**, **⇅ Flip** and **＋ New** (rematch with colours swapped) under the move list.
+6. Click **← Menu** to go back to the main menu. Leaving in the middle of a game counts as resigning, and your seat is freed for someone else.
 
 ---
 

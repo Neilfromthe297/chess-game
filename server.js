@@ -1,10 +1,11 @@
 // ============================================================
 //  CHESS GAME SERVER
-//  This file runs on a computer (your laptop, or Render). Both
+//  This file runs on a computer (your laptop, or Render). All
 //  players' browsers connect to it. It:
 //    1. Sends the web page files to the browsers
-//    2. Keeps the "real" copy of each game
-//    3. Checks every move is legal (so nobody can cheat)
+//    2. Keeps a list of game lobbies (public and private)
+//    3. Keeps the "real" copy of each game and checks every
+//       move is legal (so nobody can cheat)
 //    4. Passes moves, chat, resign and draw offers between players
 // ============================================================
 
@@ -26,7 +27,12 @@ app.use(express.static(path.join(__dirname, "public")));
 app.use("/lib", express.static(path.join(__dirname, "node_modules/chess.js/dist/esm")));
 
 // ------------------------------------------------------------
-//  GAME ROOMS — one room = one game between two players.
+//  GAME ROOMS (LOBBIES)
+//
+//  Public games get a random id like "k3x9q2ab" and are shown
+//  in the list on the main menu.
+//  Private games use their secret code as the id, e.g. "K7P2QX",
+//  and are NOT shown in the list. You need the code to join.
 //
 //  Every browser has a secret random "playerId" saved in it.
 //  Seats are tied to that id, so refreshing gives you your
@@ -34,36 +40,58 @@ app.use("/lib", express.static(path.join(__dirname, "node_modules/chess.js/dist/
 // ------------------------------------------------------------
 const rooms = new Map();
 
-function newRoom() {
+function newRoom(meta) {
   return {
+    name: meta.name,          // e.g. "Neil's game"
+    isPrivate: meta.isPrivate,
     chess: new Chess(),
-    moves: [],              // e.g. ["e2e4", "e7e5", "e7e8q"]
+    moves: [],                // e.g. ["e2e4", "e7e5", "e7e8q"]
     players: { w: null, b: null }, // { playerId, name, sockets:Set }
     lastMove: null,
-    result: null,           // set when someone resigns / agrees a draw
-    drawOffer: null,        // "w" or "b" while a draw is offered
+    result: null,             // set when someone resigns / agrees a draw
+    drawOffer: null,          // "w" or "b" while a draw is offered
     chatLog: [],
-    touched: false,         // has anything happened since the server started?
+    seen: new Set(),          // playerIds that have been here (to avoid repeat messages)
+    touched: false,           // has anything happened since the server started?
+    createdAt: Date.now(),
     lastActive: Date.now(),
   };
 }
 
-function getRoom(roomId) {
-  if (!rooms.has(roomId)) rooms.set(roomId, newRoom());
-  return rooms.get(roomId);
+function cleanMeta(meta = {}) {
+  return {
+    name: String(meta.name || "").trim().slice(0, 30) || "Chess game",
+    isPrivate: !!meta.isPrivate,
+  };
 }
 
-// Tidy up games nobody has touched for 24 hours (checked hourly).
+// Random ids. Private codes skip look-alike characters (0/O, 1/I).
+function randomId(chars, length) {
+  let id = "";
+  for (let i = 0; i < length; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+function newRoomId(isPrivate) {
+  let id;
+  do {
+    id = isPrivate
+      ? randomId("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 6)
+      : randomId("abcdefghijkmnpqrstuvwxyz23456789", 8);
+  } while (rooms.has(id));
+  return id;
+}
+
+// Tidy up games nobody has been in for 24 hours (checked hourly).
 const ONE_DAY = 24 * 60 * 60 * 1000;
 setInterval(() => {
   for (const [id, room] of rooms) {
-    const connected = io.sockets.adapter.rooms.get(id)?.size || 0;
-    if (connected === 0 && Date.now() - room.lastActive > ONE_DAY) rooms.delete(id);
+    if (connectedCount(id) === 0 && Date.now() - room.lastActive > ONE_DAY) rooms.delete(id);
   }
 }, 60 * 60 * 1000);
 
 const NAMES = { w: "White", b: "Black" };
 const other = (c) => (c === "w" ? "b" : "w");
+const connectedCount = (roomId) => io.sockets.adapter.rooms.get(roomId)?.size || 0;
 
 // Which colour is this player? ("w", "b" or null = spectator)
 function colorOf(room, playerId) {
@@ -86,14 +114,33 @@ function gameStatus(room) {
   return { over: false };
 }
 
+// Is a game being played right now (both seated, moves made, not over)?
+const inProgress = (room) =>
+  room.players.w && room.players.b && room.moves.length > 0 && !gameStatus(room).over;
+
 // Turn a stored result like { type:"resign", loser:"w" } into text.
-function resultFromBackup(r) {
+function makeResult(r) {
   if (!r) return null;
   if (r.type === "resign" && (r.loser === "w" || r.loser === "b")) {
     return { type: "resign", loser: r.loser, title: `${NAMES[other(r.loser)]} won`, reason: "by resignation" };
   }
   if (r.type === "draw") return { type: "draw", title: "Draw", reason: "by agreement" };
   return null;
+}
+
+function resetGame(room) {
+  room.chess = new Chess();
+  room.moves = [];
+  room.lastMove = null;
+  room.result = null;
+  room.drawOffer = null;
+  room.touched = true;
+}
+
+// How many people are watching (connected, but not in a seat)?
+function spectatorCount(roomId, room) {
+  const seated = (room.players.w?.sockets.size || 0) + (room.players.b?.sockets.size || 0);
+  return Math.max(0, connectedCount(roomId) - seated);
 }
 
 // Send the current game to everyone in the room. Each person
@@ -103,16 +150,72 @@ function broadcastState(roomId) {
   if (!room) return;
   const seat = (s) => (s ? { name: s.name, online: s.sockets.size > 0 } : null);
   const base = {
+    meta: { name: room.name, isPrivate: room.isPrivate, code: room.isPrivate ? roomId : null },
     moves: room.moves,
     lastMove: room.lastMove,
     status: gameStatus(room),
     drawOffer: room.drawOffer,
     players: { w: seat(room.players.w), b: seat(room.players.b) },
+    spectators: spectatorCount(roomId, room),
   };
   for (const socketId of io.sockets.adapter.rooms.get(roomId) || []) {
     const s = io.sockets.sockets.get(socketId);
     if (s) s.emit("state", { ...base, you: colorOf(room, s.data.playerId) });
   }
+  updateLobbyList();
+}
+
+// ------------------------------------------------------------
+//  THE LIST OF PUBLIC GAMES (shown on the main menu)
+//  People on the main menu are in a socket.io room called
+//  "menu". Whenever a game changes we send them a fresh list
+//  (at most every half second, so we don't flood them).
+// ------------------------------------------------------------
+function lobbyList() {
+  const list = [];
+  for (const [id, room] of rooms) {
+    if (room.isPrivate || connectedCount(id) === 0) continue; // hide empty & private games
+    const status = gameStatus(room);
+    let state = "waiting";
+    if (status.over) state = "finished";
+    else if (room.players.w && room.players.b) state = "playing";
+    list.push({
+      id,
+      name: room.name,
+      players: {
+        w: room.players.w ? { name: room.players.w.name, online: room.players.w.sockets.size > 0 } : null,
+        b: room.players.b ? { name: room.players.b.name, online: room.players.b.sockets.size > 0 } : null,
+      },
+      openSeat: !!freeSeat(room),
+      state,
+      moveCount: Math.ceil(room.moves.length / 2),
+      spectators: spectatorCount(id, room),
+      createdAt: room.createdAt,
+    });
+  }
+  // Games waiting for a player first, then newest first.
+  const order = { waiting: 0, playing: 1, finished: 2 };
+  return list.sort((a, b) => order[a.state] - order[b.state] || b.createdAt - a.createdAt).slice(0, 100);
+}
+
+let lobbyTimer = null;
+function updateLobbyList() {
+  if (lobbyTimer) return;
+  lobbyTimer = setTimeout(() => {
+    lobbyTimer = null;
+    io.to("menu").emit("lobbies", lobbyList());
+  }, 500);
+}
+
+// Which seat can a new player take? An empty one, or — once a
+// game is finished — the seat of a player who has gone offline.
+function freeSeat(room, preferred) {
+  const over = gameStatus(room).over;
+  const isFree = (c) => !room.players[c] || (over && room.players[c].sockets.size === 0);
+  if ((preferred === "w" || preferred === "b") && isFree(preferred)) return preferred;
+  if (isFree("w")) return "w";
+  if (isFree("b")) return "b";
+  return null;
 }
 
 function sendChat(roomId, msg) {
@@ -150,7 +253,7 @@ function tryRestore(room, backup) {
   room.chess = chess;
   room.moves = backup.moves.slice();
   room.lastMove = last;
-  room.result = resultFromBackup(backup.result);
+  room.result = makeResult(backup.result);
   if (room.chatLog.length === 0 && Array.isArray(backup.chat)) {
     room.chatLog = backup.chat.slice(-100).map((c) => ({
       system: !!c.system,
@@ -173,33 +276,83 @@ io.on("connection", (socket) => {
   const myRoom = () => rooms.get(roomId);
   const myColor = () => (myRoom() ? colorOf(myRoom(), playerId) : null);
 
+  // ---------- Main menu ----------
+  socket.on("watchLobbies", () => {
+    socket.join("menu");
+    socket.emit("lobbies", lobbyList());
+  });
+
+  // Create a new game. The creator gets a seat straight away.
+  socket.on("create", (data = {}, reply) => {
+    if (typeof reply !== "function") return;
+    const id = String(data.playerId || "").slice(0, 64);
+    if (!id) return reply({ error: "Something went wrong — please refresh." });
+    const meta = cleanMeta({ name: data.gameName, isPrivate: data.isPrivate });
+    const roomId = newRoomId(meta.isPrivate);
+    const room = newRoom(meta);
+    let color = data.color;
+    if (color !== "w" && color !== "b") color = Math.random() < 0.5 ? "w" : "b";
+    const name = String(data.playerName || "Player").trim().slice(0, 20) || "Player";
+    room.players[color] = { playerId: id, name, sockets: new Set() };
+    rooms.set(roomId, room);
+    systemMessage(roomId, `${name} created the game and plays ${NAMES[color]}.`);
+    reply({ roomId });
+  });
+
+  // Does a private code exist? (used by "Join with code")
+  socket.on("checkCode", (code, reply) => {
+    if (typeof reply !== "function") return;
+    code = String(code || "").trim().toUpperCase();
+    reply({ ok: rooms.has(code) && rooms.get(code).isPrivate, code });
+  });
+
+  // ---------- Joining a game (to play or to watch) ----------
   socket.on("join", (data = {}) => {
     roomId = String(data.room || "").slice(0, 40);
     playerId = String(data.playerId || "").slice(0, 64);
     myName = String(data.name || "Player").trim().slice(0, 20) || "Player";
     if (!roomId || !playerId) return;
     socket.data.playerId = playerId;
+    socket.leave("menu");
 
-    const room = getRoom(roomId);
+    let room = rooms.get(roomId);
+    if (!room) {
+      // The server forgot this game (it restarted). If this browser
+      // has a backup, bring the game back. Otherwise it's gone.
+      if (data.backup?.meta) {
+        room = newRoom(cleanMeta(data.backup.meta));
+        rooms.set(roomId, room);
+      } else {
+        socket.emit("notFound");
+        roomId = null;
+        return;
+      }
+    }
     socket.join(roomId);
     room.lastActive = Date.now();
 
     const restored = tryRestore(room, data.backup);
 
     let color = colorOf(room, playerId);
-    let returning = !!color;
-    if (!color) {
-      // New player: take the colour they had before (from the
-      // backup) if it's free, otherwise any free seat.
+    let message = null;
+    if (!color && data.want !== "watch") {
+      // Wants to play: take the colour from the backup if it's
+      // free (coming back after a restart), otherwise any free seat.
       const wanted = data.backup?.color;
-      if ((wanted === "w" || wanted === "b") && !room.players[wanted]) {
-        color = wanted;
-        returning = wanted && (data.backup.moves || []).length > 0; // back after a restart
+      color = freeSeat(room, wanted);
+      if (color) {
+        const comingBack = color === wanted && restored;
+        if (room.players[color]) {
+          systemMessage(roomId, `${room.players[color].name} left — ${myName} takes their seat.`);
+        }
+        room.players[color] = { playerId, name: myName, sockets: new Set() };
+        // Sitting down at a finished game starts a fresh one.
+        if (gameStatus(room).over) resetGame(room);
+        if (!comingBack) message = `${myName} joined as ${NAMES[color]}.`;
       }
-      else if (!room.players.w) color = "w";
-      else if (!room.players.b) color = "b";
-      if (color) room.players[color] = { playerId, name: myName, sockets: new Set() };
     }
+    if (!color && !room.seen.has(playerId)) message = `${myName} is watching.`;
+    room.seen.add(playerId);
     if (color) {
       room.players[color].name = myName;
       room.players[color].sockets.add(socket.id);
@@ -207,13 +360,38 @@ io.on("connection", (socket) => {
 
     socket.emit("chatLog", room.chatLog);
     if (restored) systemMessage(roomId, "Game restored — carry on where you left off!");
-    if (!returning) {
-      const role = color ? NAMES[color] : "a spectator";
-      systemMessage(roomId, `${myName} joined as ${role}.`);
-    }
+    if (message) systemMessage(roomId, message);
     broadcastState(roomId);
   });
 
+  // Leave the game and go back to the main menu. Leaving in the
+  // middle of a game counts as resigning.
+  socket.on("leave", (reply) => {
+    const room = myRoom();
+    const color = myColor();
+    if (room) {
+      if (color) {
+        if (inProgress(room)) {
+          room.result = makeResult({ type: "resign", loser: color });
+          room.touched = true;
+          systemMessage(roomId, `${myName} left the game and resigned.`);
+        } else {
+          systemMessage(roomId, `${myName} left the game.`);
+        }
+        room.players[color] = null; // free the seat for someone else
+        room.drawOffer = null;
+      } else {
+        systemMessage(roomId, `${myName} stopped watching.`);
+      }
+      socket.leave(roomId);
+      const oldRoom = roomId;
+      roomId = null;
+      broadcastState(oldRoom);
+    }
+    if (typeof reply === "function") reply();
+  });
+
+  // ---------- Playing ----------
   socket.on("move", (move = {}) => {
     const room = myRoom();
     const color = myColor();
@@ -241,7 +419,7 @@ io.on("connection", (socket) => {
     const room = myRoom();
     const color = myColor();
     if (!room || !color || gameStatus(room).over) return;
-    room.result = resultFromBackup({ type: "resign", loser: color });
+    room.result = makeResult({ type: "resign", loser: color });
     room.touched = true;
     systemMessage(roomId, `${myName} resigned.`);
     broadcastState(roomId);
@@ -262,7 +440,7 @@ io.on("connection", (socket) => {
     if (!room || !color || room.drawOffer !== other(color)) return;
     room.drawOffer = null;
     if (accept) {
-      room.result = resultFromBackup({ type: "draw" });
+      room.result = makeResult({ type: "draw" });
       room.touched = true;
       systemMessage(roomId, "Draw agreed.");
     } else {
@@ -275,12 +453,7 @@ io.on("connection", (socket) => {
   socket.on("newGame", () => {
     const room = myRoom();
     if (!room || !myColor()) return;
-    room.chess = new Chess();
-    room.moves = [];
-    room.lastMove = null;
-    room.result = null;
-    room.drawOffer = null;
-    room.touched = true;
+    resetGame(room);
     room.players = { w: room.players.b, b: room.players.w };
     systemMessage(roomId, `${myName} started a new game. Colours swapped!`);
     broadcastState(roomId);
